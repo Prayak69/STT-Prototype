@@ -1,0 +1,11 @@
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.env
+.streamlit/secrets.toml
+conformer_assets/
+*.log
+inference_log.txt
+inference_log.jsonl
+input_audios
