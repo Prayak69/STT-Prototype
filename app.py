@@ -1,19 +1,27 @@
 # -*- coding: utf-8 -*-
 """
 VoxNote - Minimalist Audio Transcription Dashboard
-Doctor-Patient Consultation Intelligence (Dummy Data Prototype)
+Doctor-Patient Consultation Intelligence (Live Transcription Prototype)
 """
 from __future__ import annotations
 import json
+from datetime import datetime
+
 import streamlit as st
-from mock_data import (
-    TRANSCRIPTION_HISTORY,
-    ALLOWED_EXTENSIONS,
-    MAX_FILE_SIZE_MB,
-    SAMPLE_TRANSCRIPT,
-    SAMPLE_DETAILS,
-)
+
+from audio_io import format_duration
 from transcription_service import transcribe
+from conformer_engine import LANGUAGE_LABELS, assets_available
+from diarization import diarization_status, is_diarization_configured
+
+ALLOWED_EXTENSIONS = ["mp3", "wav", "m4a"]
+MAX_FILE_SIZE_MB = 25
+
+LANGUAGE_OPTIONS = list(LANGUAGE_LABELS.keys())
+DEFAULT_LANGUAGE_LABEL = next(
+    label for label, code in LANGUAGE_LABELS.items() if code == "hi"
+)
+DECODING_OPTIONS = {"RNNT (accurate)": "rnnt", "CTC (fast)": "ctc"}
 
 # ---- Streamlit Page Configuration ----
 st.set_page_config(
@@ -117,18 +125,18 @@ section[data-testid="stSidebar"] div[data-testid="stVerticalBlock"] > div:first-
     gap: 0.25rem;
 }
 
-/* Sample data disclaimer badge */
-.sample-banner {
+/* Live transcript banner */
+.live-banner {
     display: flex;
     align-items: flex-start;
     gap: 0.75rem;
-    background-color: #fffbeb;
-    border: 1px solid #fef3c7;
-    border-left: 4px solid #f59e0b;
+    background-color: #ecfdf5;
+    border: 1px solid #d1fae5;
+    border-left: 4px solid #10b981;
     border-radius: 8px;
     padding: 0.85rem 1rem;
     font-size: 0.83rem;
-    color: #92400e;
+    color: #065f46;
     margin-bottom: 1.25rem;
     line-height: 1.45;
 }
@@ -182,6 +190,21 @@ section[data-testid="stSidebar"] div[data-testid="stVerticalBlock"] > div:first-
     color: #0f766e;
     background: #f0fdfa;
     border: 1px solid #ccfbf1;
+    border-radius: 6px;
+    padding: 0.2rem 0.55rem;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+}
+
+.speaker-badge-speaker {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 0.72rem;
+    font-weight: 600;
+    color: #475569;
+    background: #f1f5f9;
+    border: 1px solid #e2e8f0;
     border-radius: 6px;
     padding: 0.2rem 0.55rem;
     text-transform: uppercase;
@@ -313,14 +336,33 @@ header {visibility: hidden;}
 # ---- Session State Initialization ----
 if "transcript_result" not in st.session_state:
     st.session_state.transcript_result = None
-if "active_history" not in st.session_state:
-    # Set default preview to the first consultation record
-    st.session_state.active_history = {
-        "transcript": TRANSCRIPTION_HISTORY[0]["transcript"],
-        "details": TRANSCRIPTION_HISTORY[0]["details"],
-    }
+if "transcript_history" not in st.session_state:
+    st.session_state.transcript_history = []
+if "uploader_reset_counter" not in st.session_state:
+    st.session_state.uploader_reset_counter = 0
 if "processing" not in st.session_state:
     st.session_state.processing = False
+
+_assets_ready = assets_available()
+_diar_status = diarization_status()
+_asr_status_text = "Ready" if _assets_ready else "Assets missing"
+if _diar_status["installed"] and _diar_status["token_configured"]:
+    _diar_status_text = "Configured"
+elif _diar_status["installed"]:
+    _diar_status_text = "HF token required"
+else:
+    _diar_status_text = "Not installed"
+
+
+def open_transcript(item: dict) -> None:
+    st.session_state.transcript_result = item
+    st.session_state.nav_selection = "📊 Dashboard"
+
+
+def reset_transcription_view() -> None:
+    st.session_state.transcript_result = None
+    st.session_state.processing = False
+    st.session_state.uploader_reset_counter += 1
 
 
 # ---- Sidebar Navigation & Profile ----
@@ -347,16 +389,18 @@ with st.sidebar:
         options=["📊 Dashboard", "📋 Transcriptions", "⚙️ Settings"],
         index=0,
         label_visibility="collapsed",
+        key="nav_selection",
     )
 
     st.markdown("<hr style='margin:1.25rem 0; border:none; border-top:1px solid #e2e8f0;' />", unsafe_allow_html=True)
 
     # Clinic Workspace info
-    st.markdown("""
+    st.markdown(f"""
         <div style="padding:0.75rem; background:#f8fafc; border:1px solid #f1f5f9; border-radius:8px; margin-bottom:1.5rem;">
             <div style="font-size:0.72rem; font-weight:600; color:#64748b; text-transform:uppercase; letter-spacing:0.04em;">Active Clinic</div>
             <div style="font-size:0.85rem; font-weight:600; color:#1e293b; margin-top:0.2rem;">MetroCare Multispecialty</div>
-            <div style="font-size:0.75rem; color:#10b981; margin-top:0.15rem;">● STT Engine: Online (Mock)</div>
+            <div style="font-size:0.75rem; color:#10b981; margin-top:0.15rem;">● ASR: IndicConformer ONNX — {_asr_status_text}</div>
+            <div style="font-size:0.75rem; color:#10b981; margin-top:0.15rem;">● Diarization: pyannote.audio — {_diar_status_text}</div>
         </div>
     """, unsafe_allow_html=True)
 
@@ -386,38 +430,69 @@ if nav_selection == "📊 Dashboard":
     col_hdr, col_action = st.columns([3, 1])
     with col_hdr:
         st.markdown("<h2 style='font-weight:700; color:#0f172a; margin-bottom:0.2rem;'>Audio Transcription</h2>", unsafe_allow_html=True)
-        st.markdown("<p style='color:#64748b; font-size:0.9rem; margin-top:0;'>Upload clinical recordings or select existing consultations to review AI transcripts.</p>", unsafe_allow_html=True)
+        st.markdown("<p style='color:#64748b; font-size:0.9rem; margin-top:0;'>Upload a consultation recording to generate a live transcript.</p>", unsafe_allow_html=True)
     with col_action:
-        if st.button("➕  New Transcription", type="primary", use_container_width=True):
-            st.session_state.transcript_result = None
-            st.session_state.active_history = None
-            st.session_state.processing = False
-            st.rerun()
+        st.button(
+            "➕  New Transcription",
+            type="primary",
+            use_container_width=True,
+            on_click=reset_transcription_view,
+        )
 
     st.markdown("<div style='margin-bottom:1rem;'></div>", unsafe_allow_html=True)
 
+    session_history = st.session_state.transcript_history
+    total_recordings = len(session_history)
+    total_audio_seconds = sum(
+        float(record.get("details", {}).get("audio_duration_seconds", 0) or 0)
+        for record in session_history
+    )
+    total_audio_text = (
+        format_duration(total_audio_seconds) if total_audio_seconds else "0 sec"
+    )
+    confidence_values = []
+    for record in session_history:
+        confidence = str(
+            record.get("details", {}).get("confidence_score", "")
+        ).strip()
+        if confidence.endswith("%"):
+            try:
+                confidence_values.append(float(confidence[:-1]))
+            except ValueError:
+                pass
+    avg_confidence = (
+        f"{sum(confidence_values) / len(confidence_values):.1f}%"
+        if confidence_values
+        else "N/A"
+    )
+    avg_duration = (
+        format_duration(total_audio_seconds / total_recordings)
+        if total_recordings
+        else "—"
+    )
+
     # Metric Stats Cards
-    st.markdown("""
+    st.markdown(f"""
         <div class="stat-grid">
             <div class="stat-box">
                 <div class="stat-label">Total Recordings</div>
-                <div class="stat-value">28</div>
-                <div class="stat-meta">↑ 4 added this week</div>
+                <div class="stat-value">{total_recordings}</div>
+                <div class="stat-meta">This session</div>
             </div>
             <div class="stat-box">
                 <div class="stat-label">Audio Processed</div>
-                <div class="stat-value">5h 42m</div>
-                <div class="stat-meta">Avg 2m 14s / call</div>
+                <div class="stat-value">{total_audio_text}</div>
+                <div class="stat-meta">Avg {avg_duration} / recording</div>
             </div>
             <div class="stat-box">
-                <div class="stat-label">Avg Accuracy</div>
-                <div class="stat-value">98.6%</div>
-                <div class="stat-meta">Clinical benchmark</div>
+                <div class="stat-label">Avg Confidence</div>
+                <div class="stat-value">{avg_confidence}</div>
+                <div class="stat-meta">CTC runs only</div>
             </div>
             <div class="stat-box">
                 <div class="stat-label">Supported Languages</div>
-                <div class="stat-value">Hinglish / EN</div>
-                <div class="stat-meta">Devanagari enabled</div>
+                <div class="stat-value">22 Indic</div>
+                <div class="stat-meta">IndicConformer ONNX</div>
             </div>
         </div>
     """, unsafe_allow_html=True)
@@ -438,7 +513,7 @@ if nav_selection == "📊 Dashboard":
         "Upload audio recording",
         type=ALLOWED_EXTENSIONS,
         label_visibility="collapsed",
-        key="main_audio_uploader",
+        key=f"main_audio_uploader_{st.session_state.uploader_reset_counter}",
     )
 
     if uploaded_file is not None:
@@ -464,6 +539,53 @@ if nav_selection == "📊 Dashboard":
 
             st.audio(uploaded_file)
 
+            st.markdown(
+                "<div style='font-size:0.8rem; font-weight:600; color:#475569; "
+                "margin:0.75rem 0 0.35rem;'>Transcription settings</div>",
+                unsafe_allow_html=True,
+            )
+            ctrl_lang, ctrl_mode, ctrl_spk, ctrl_first = st.columns(4)
+            with ctrl_lang:
+                language_label = st.selectbox(
+                    "Language",
+                    LANGUAGE_OPTIONS,
+                    index=LANGUAGE_OPTIONS.index(DEFAULT_LANGUAGE_LABEL),
+                    key="asr_language",
+                )
+            with ctrl_mode:
+                decoding_label = st.selectbox(
+                    "Decoding",
+                    list(DECODING_OPTIONS.keys()),
+                    index=0,
+                    key="asr_decoding",
+                )
+            with ctrl_spk:
+                speaker_choice = st.selectbox(
+                    "Speakers",
+                    ["Auto-detect", "1", "2", "3", "4", "5", "6"],
+                    index=0,
+                    key="asr_speakers",
+                )
+            with ctrl_first:
+                first_speaker = st.selectbox(
+                    "First speaker",
+                    ["Doctor", "Patient"],
+                    index=0,
+                    key="asr_first_speaker",
+                )
+
+            diarization_enabled = st.checkbox(
+                "Label speakers with pyannote.audio",
+                value=True,
+                key="enable_diarization",
+            )
+            if diarization_enabled and not is_diarization_configured():
+                st.caption(
+                    "⚠️ Speaker labeling needs HF_TOKEN in .env and access to the "
+                    "pyannote model on Hugging Face; transcription will still run "
+                    "with a single speaker label."
+                )
+
             col_btn, col_spacer = st.columns([1, 2])
             with col_btn:
                 if st.button("🚀  Generate Transcript", type="primary", use_container_width=True, disabled=st.session_state.processing):
@@ -473,21 +595,55 @@ if nav_selection == "📊 Dashboard":
                     def on_progress(p: float, text: str):
                         progress_bar.progress(p, text=text)
 
-                    res = transcribe(uploaded_file.name, uploaded_file.getvalue(), progress_callback=on_progress)
-                    st.session_state.transcript_result = res
-                    st.session_state.active_history = None
-                    st.session_state.processing = False
-                    st.rerun()
+                    num_speakers = (
+                        None
+                        if speaker_choice == "Auto-detect"
+                        else int(speaker_choice)
+                    )
+                    try:
+                        res = transcribe(
+                            uploaded_file.name,
+                            uploaded_file.getvalue(),
+                            progress_callback=on_progress,
+                            language=LANGUAGE_LABELS[language_label],
+                            decoding=DECODING_OPTIONS[decoding_label],
+                            num_speakers=num_speakers,
+                            enable_diarization=diarization_enabled,
+                            first_speaker=first_speaker,
+                        )
+                    except Exception as exc:
+                        st.session_state.processing = False
+                        progress_bar.empty()
+                        st.error(f"❌ Transcription failed: {exc}")
+                    else:
+                        res["details"]["processed_at"] = datetime.now().strftime(
+                            "%Y-%m-%d %H:%M"
+                        )
+                        st.session_state.transcript_history.insert(0, res)
+                        st.session_state.transcript_result = res
+                        st.session_state.processing = False
+                        st.rerun()
 
     st.markdown("</div>", unsafe_allow_html=True)
 
     # ---- Transcription Result Card ----
-    current_result = st.session_state.transcript_result or st.session_state.active_history
+    current_result = st.session_state.transcript_result
 
     if current_result:
         transcript = current_result.get("transcript", [])
         details = current_result.get("details", {})
         active_title = details.get("file_name", "Consultation Transcript")
+
+        banner_html = f"""
+            <div class="live-banner">
+                <span style="font-size:1.1rem;">✅</span>
+                <div>
+                    <strong>Live transcription</strong> — {details.get('asr_model', 'IndicConformer-600M-Multilingual (ONNX)')}
+                    &nbsp;·&nbsp; {details.get('decoding', 'RNNT')} decoding
+                    &nbsp;·&nbsp; Speakers: {details.get('diarization', 'pyannote.audio')}
+                </div>
+            </div>
+        """
 
         st.markdown(f"""
             <div class="vx-card">
@@ -501,15 +657,13 @@ if nav_selection == "📊 Dashboard":
                     Specialty: <strong>{details.get('medical_specialty', 'General Medicine')}</strong>
                 </div>
 
-                <div class="sample-banner">
-                    <span style="font-size:1.1rem;">⚠️</span>
-                    <div>
-                        <strong>Sample Data Prototype</strong> — This transcript is predefined clinical dummy content for UI evaluation and was not processed through a live speech backend.
-                    </div>
-                </div>
+                {banner_html}
         """, unsafe_allow_html=True)
 
-        tab_conv, tab_soap, tab_meta = st.tabs(["💬 Dialogue Transcript", "🩺 Clinical SOAP Note", "📋 File & Audio Details"])
+        if details.get("diarization_warning"):
+            st.warning(details["diarization_warning"])
+
+        tab_conv, tab_meta = st.tabs(["💬 Dialogue Transcript", "📋 File & Audio Details"])
 
         with tab_conv:
             # Keyword filter inside transcript
@@ -524,7 +678,12 @@ if nav_selection == "📊 Dashboard":
                 st.info(f"No dialogue turns match '{q_filter}'.")
             else:
                 for turn in filtered_turns:
-                    badge_cls = "speaker-badge-doctor" if turn["speaker"] == "Doctor" else "speaker-badge-patient"
+                    if turn["speaker"] == "Doctor":
+                        badge_cls = "speaker-badge-doctor"
+                    elif turn["speaker"] == "Patient":
+                        badge_cls = "speaker-badge-patient"
+                    else:
+                        badge_cls = "speaker-badge-speaker"
                     st.markdown(f"""
                         <div class="speaker-bubble">
                             <div class="speaker-col-meta">
@@ -565,38 +724,6 @@ if nav_selection == "📊 Dashboard":
                     use_container_width=True,
                 )
 
-        with tab_soap:
-            st.markdown("""
-                <div style="background:#f8fafc; border:1px solid #e2e8f0; border-radius:8px; padding:1.25rem;">
-                    <div style="margin-bottom:1rem;">
-                        <span style="font-weight:700; color:#4338ca; font-size:0.85rem; text-transform:uppercase;">S — Subjective</span>
-                        <div style="font-size:0.9rem; color:#1e293b; margin-top:0.3rem; line-height:1.5;">
-                            Patient reports exertional chest heaviness and mild breathlessness when climbing stairs over the past 3–4 days. Discomfort settles with rest. No radiation to neck, left shoulder, or jaw. Past medical history positive for mild hypertension.
-                        </div>
-                    </div>
-                    <div style="margin-bottom:1rem;">
-                        <span style="font-weight:700; color:#0f766e; font-size:0.85rem; text-transform:uppercase;">O — Objective</span>
-                        <div style="font-size:0.9rem; color:#1e293b; margin-top:0.3rem; line-height:1.5;">
-                            Current medication: Tab. Amlodipine 5mg OD post-breakfast. Vitals examination and 12-lead resting ECG scheduled immediately on couch.
-                        </div>
-                    </div>
-                    <div style="margin-bottom:1rem;">
-                        <span style="font-weight:700; color:#d97706; font-size:0.85rem; text-transform:uppercase;">A — Assessment</span>
-                        <div style="font-size:0.9rem; color:#1e293b; margin-top:0.3rem; line-height:1.5;">
-                            Exertional angina / ischemic heart disease to be ruled out vs. hypertensive cardiac follow-up.
-                        </div>
-                    </div>
-                    <div>
-                        <span style="font-weight:700; color:#dc2626; font-size:0.85rem; text-transform:uppercase;">P — Plan</span>
-                        <div style="font-size:0.9rem; color:#1e293b; margin-top:0.3rem; line-height:1.5;">
-                            1. Immediate 12-lead ECG.<br/>
-                            2. Serum Troponin-I and lipid profile test.<br/>
-                            3. Continue Amlodipine 5mg; review with ECG traces.
-                        </div>
-                    </div>
-                </div>
-            """, unsafe_allow_html=True)
-
         with tab_meta:
             st.markdown("""
                 <div class="detail-grid">
@@ -609,12 +736,24 @@ if nav_selection == "📊 Dashboard":
                         <div class="detail-item-val">{dur}</div>
                     </div>
                     <div>
-                        <div class="detail-item-title">Language Model</div>
+                        <div class="detail-item-title">Language</div>
                         <div class="detail-item-val">{lang}</div>
                     </div>
                     <div>
                         <div class="detail-item-title">Detected Speakers</div>
                         <div class="detail-item-val">{spk} Speakers</div>
+                    </div>
+                    <div>
+                        <div class="detail-item-title">ASR Engine</div>
+                        <div class="detail-item-val">{asr}</div>
+                    </div>
+                    <div>
+                        <div class="detail-item-title">Decoding Mode</div>
+                        <div class="detail-item-val">{dec}</div>
+                    </div>
+                    <div>
+                        <div class="detail-item-title">Diarization Engine</div>
+                        <div class="detail-item-val">{diar}</div>
                     </div>
                     <div>
                         <div class="detail-item-title">Model Confidence</div>
@@ -640,70 +779,103 @@ if nav_selection == "📊 Dashboard":
             """.format(
                 fname=details.get("file_name", "audio_recording"),
                 dur=details.get("audio_duration", "—"),
-                lang=details.get("language", "Hinglish"),
-                spk=details.get("speakers_detected", 2),
-                conf=details.get("confidence_score", "98.6%"),
+                lang=details.get("language", "—"),
+                spk=details.get("speakers_detected", 1),
+                asr=details.get("asr_model", "IndicConformer-600M-Multilingual (ONNX)"),
+                dec=details.get("decoding", "RNNT"),
+                diar=details.get("diarization", "pyannote.audio"),
+                conf=details.get("confidence_score", "N/A"),
                 wc=details.get("word_count", "—"),
-                spec=details.get("medical_specialty", "General"),
-                sr=details.get("sample_rate", "44.1 kHz"),
-                ch=details.get("channels", "Mono"),
+                spec=details.get("medical_specialty", "General Medicine"),
+                sr=details.get("sample_rate", "—"),
+                ch=details.get("channels", "—"),
             ), unsafe_allow_html=True)
 
         st.markdown("</div>", unsafe_allow_html=True)
 
     # ---- Recent Transcriptions History ----
-    st.markdown("""
+    session_history = st.session_state.transcript_history
+    st.markdown(f"""
         <div class="vx-card">
             <div class="vx-card-header">
                 <span>Recent Transcriptions</span>
-                <span style="font-size:0.8rem; color:#64748b; font-weight:normal;">Sample archive</span>
+                <span style="font-size:0.8rem; color:#64748b; font-weight:normal;">{len(session_history)} in this session</span>
             </div>
             <div class="vx-card-sub">
-                Quickly browse and inspect previous doctor-patient consultation recordings.
+                Transcriptions generated during this browser session.
             </div>
     """, unsafe_allow_html=True)
 
-    col_srch, col_flt = st.columns([3, 1])
-    with col_srch:
-        hist_query = st.text_input("Search history recordings...", placeholder="Search by file name or language...", label_visibility="collapsed")
-    with col_flt:
-        lang_filter = st.selectbox("Language Filter", ["All Languages", "Hinglish", "Hindi", "English"], label_visibility="collapsed")
-
-    filtered_hist = TRANSCRIPTION_HISTORY
-    if hist_query:
-        hq = hist_query.lower()
-        filtered_hist = [r for r in filtered_hist if hq in r["file_name"].lower() or hq in r["language"].lower()]
-
-    if lang_filter != "All Languages":
-        filtered_hist = [r for r in filtered_hist if lang_filter.lower() in r["language"].lower()]
-
-    if not filtered_hist:
-        st.info("No recorded consultations found matching your search filter.")
+    if not session_history:
+        st.info(
+            "No transcriptions yet. Upload an audio file above to generate the first transcript."
+        )
     else:
-        for rec in filtered_hist:
-            col_info, col_tag, col_act = st.columns([3, 2, 1])
-            with col_info:
-                st.markdown(f"""
-                    <div>
-                        <div class="history-filename">📁 {rec['file_name']}</div>
-                        <div class="history-sub">Recorded on {rec['date']} · {rec['duration']}</div>
-                    </div>
-                """, unsafe_allow_html=True)
-            with col_tag:
-                st.markdown(f"""
-                    <div style="padding-top:0.3rem;">
-                        <span class="lang-chip">{rec['language']}</span>
-                        <span class="status-chip">{rec['status']}</span>
-                    </div>
-                """, unsafe_allow_html=True)
-            with col_act:
-                if st.button("Open", key=f"open_dash_{rec['id']}", use_container_width=True):
-                    st.session_state.active_history = {
-                        "transcript": rec["transcript"],
-                        "details": rec["details"],
-                    }
-                    st.session_state.transcript_result = None
-                    st.rerun()
+        language_values = sorted(
+            {
+                record.get("details", {}).get("language", "")
+                for record in session_history
+                if record.get("details", {}).get("language")
+            }
+        )
+        col_srch, col_flt = st.columns([3, 1])
+        with col_srch:
+            hist_query = st.text_input(
+                "Search history recordings...",
+                placeholder="Search by file name or language...",
+                label_visibility="collapsed",
+            )
+        with col_flt:
+            lang_filter = st.selectbox(
+                "Language Filter",
+                ["All Languages", *language_values],
+                label_visibility="collapsed",
+            )
+
+        filtered_hist = []
+        for record in session_history:
+            record_details = record.get("details", {})
+            haystack = (
+                f"{record_details.get('file_name', '')} "
+                f"{record_details.get('language', '')}"
+            ).lower()
+            if hist_query and hist_query.lower() not in haystack:
+                continue
+            if (
+                lang_filter != "All Languages"
+                and lang_filter != record_details.get("language")
+            ):
+                continue
+            filtered_hist.append(record)
+
+        if not filtered_hist:
+            st.info("No transcriptions match your search filter.")
+        else:
+            for index, rec in enumerate(filtered_hist):
+                rec_details = rec.get("details", {})
+                col_info, col_tag, col_act = st.columns([3, 2, 1])
+                with col_info:
+                    st.markdown(f"""
+                        <div>
+                            <div class="history-filename">📁 {rec_details.get('file_name', 'Recording')}</div>
+                            <div class="history-sub">{rec_details.get('processed_at', '—')} · {rec_details.get('audio_duration', '—')}</div>
+                        </div>
+                    """, unsafe_allow_html=True)
+                with col_tag:
+                    st.markdown(f"""
+                        <div style="padding-top:0.3rem;">
+                            <span class="lang-chip">{rec_details.get('language', '—')}</span>
+                            <span class="status-chip">{rec_details.get('processing_status', 'Completed')}</span>
+                        </div>
+                    """, unsafe_allow_html=True)
+                with col_act:
+                    st.button(
+                        "Open",
+                        key=f"open_dash_{index}",
+                        use_container_width=True,
+                        on_click=open_transcript,
+                        args=(rec,),
+                    )
 
     st.markdown("</div>", unsafe_allow_html=True)
 
@@ -715,35 +887,62 @@ elif nav_selection == "📋 Transcriptions":
     st.markdown("<h2 style='font-weight:700; color:#0f172a; margin-bottom:0.2rem;'>Transcriptions Library</h2>", unsafe_allow_html=True)
     st.markdown("<p style='color:#64748b; font-size:0.9rem; margin-top:0;'>Comprehensive archive of recorded patient encounters, speaker breakdowns, and export records.</p>", unsafe_allow_html=True)
 
-    st.markdown("""
+    session_history = st.session_state.transcript_history
+    st.markdown(f"""
         <div class="vx-card">
             <div class="vx-card-header">
                 <span>All Consultation Files</span>
-                <span class="lang-chip">4 Records</span>
+                <span class="lang-chip">{len(session_history)} Records</span>
             </div>
     """, unsafe_allow_html=True)
 
-    for item in TRANSCRIPTION_HISTORY:
-        with st.expander(f"📁 {item['file_name']}  ({item['language']} · {item['duration']})", expanded=False):
-            col_left, col_right = st.columns([3, 2])
-            with col_left:
-                st.markdown("**Transcript Preview:**")
-                for t in item["transcript"][:3]:
-                    st.markdown(f"**{t['speaker']}** ({t['timestamp']}): *{t['text']}*")
-                if len(item["transcript"]) > 3:
-                    st.caption(f"... and {len(item['transcript']) - 3} more turns.")
-            with col_right:
-                st.markdown("**Session Metadata:**")
-                st.markdown(f"- **Specialty:** {item['details'].get('medical_specialty', 'Clinical')}")
-                st.markdown(f"- **Accuracy:** {item['details'].get('confidence_score', '98.5%')}")
-                st.markdown(f"- **Word Count:** {item['details'].get('word_count', 80)} words")
-                if st.button("Load in Main Viewer", key=f"lib_view_{item['id']}"):
-                    st.session_state.active_history = {
-                        "transcript": item["transcript"],
-                        "details": item["details"],
-                    }
-                    st.session_state.transcript_result = None
-                    st.success("Loaded consultation into dashboard view!")
+    if not session_history:
+        st.info(
+            "No transcriptions in this session yet. Upload an audio file from the Dashboard."
+        )
+    else:
+        for index, item in enumerate(session_history):
+            item_details = item.get("details", {})
+            with st.expander(
+                f"📁 {item_details.get('file_name', 'Recording')}  "
+                f"({item_details.get('language', '—')} · "
+                f"{item_details.get('audio_duration', '—')})",
+                expanded=False,
+            ):
+                col_left, col_right = st.columns([3, 2])
+                with col_left:
+                    st.markdown("**Transcript Preview:**")
+                    transcript_turns = item.get("transcript", [])
+                    for turn in transcript_turns[:3]:
+                        st.markdown(
+                            f"**{turn['speaker']}** ({turn['timestamp']}): "
+                            f"*{turn['text']}*"
+                        )
+                    if len(transcript_turns) > 3:
+                        st.caption(
+                            f"... and {len(transcript_turns) - 3} more turns."
+                        )
+                with col_right:
+                    st.markdown("**Session Metadata:**")
+                    st.markdown(
+                        f"- **Specialty:** {item_details.get('medical_specialty', 'General Medicine')}"
+                    )
+                    st.markdown(
+                        f"- **Confidence:** {item_details.get('confidence_score', 'N/A')}"
+                    )
+                    st.markdown(
+                        f"- **Word Count:** {item_details.get('word_count', 0)} words"
+                    )
+                    st.markdown(
+                        f"- **Processed:** {item_details.get('processed_at', '—')}"
+                    )
+                    st.button(
+                        "Load in Main Viewer",
+                        key=f"lib_view_{index}",
+                        use_container_width=True,
+                        on_click=open_transcript,
+                        args=(item,),
+                    )
 
     st.markdown("</div>", unsafe_allow_html=True)
 
@@ -763,8 +962,19 @@ elif nav_selection == "⚙️ Settings":
 
     c1, c2 = st.columns(2)
     with c1:
-        st.selectbox("Primary Language / Dialect", ["Hinglish (Hindi + English colloquial)", "Hindi (Devanagari)", "English (Indian Accent)", "English (US)"])
-        st.selectbox("Acoustic Model Tier", ["Clinical Conformer V3 (High Accuracy)", "Whisper Large V3 (Clinical Fine-tune)", "Lightweight Fast STT"])
+        st.selectbox(
+            "Primary Language / Dialect",
+            LANGUAGE_OPTIONS,
+            index=LANGUAGE_OPTIONS.index(DEFAULT_LANGUAGE_LABEL),
+        )
+        st.selectbox(
+            "Acoustic Model Tier",
+            ["IndicConformer-600M Multilingual (ONNX)"],
+        )
+        st.selectbox(
+            "Decoding Strategy",
+            list(DECODING_OPTIONS.keys()),
+        )
     with c2:
         st.number_input("Max Expected Speakers", min_value=1, max_value=6, value=2)
         st.checkbox("Enable Automatic Speaker Diarization", value=True)
