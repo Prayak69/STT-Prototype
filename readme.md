@@ -9,7 +9,7 @@ speaker diarization.
 | Stage | Engine |
 |---|---|
 | Speech-to-text | IndicConformer-600M-Multilingual, ONNX Runtime, CPU |
-| Speaker labeling | pyannote.audio 4.x (`pyannote/speaker-diarization-community-1`) |
+| Speaker labeling | pyannote.audio 4.x (`pyannote/speaker-diarization-3.1`) |
 | Frontend | Streamlit (`app.py`) |
 
 The Conformer ONNX assets are stored locally in `conformer_assets/`. Only the
@@ -36,13 +36,20 @@ Or run the setup script:
 Speaker labeling needs a Hugging Face token:
 
 1. Accept the conditions at
-   https://huggingface.co/pyannote/speaker-diarization-community-1
+   https://huggingface.co/pyannote/speaker-diarization-3.1
 2. Create a token at https://huggingface.co/settings/tokens
 3. Add it to `.env`:
 
 ```dotenv
 HF_TOKEN=hf_...
-PYANNOTE_MODEL=pyannote/speaker-diarization-community-1
+PYANNOTE_MODEL=pyannote/speaker-diarization-3.1
+```
+
+If two speakers are being split into four (over-clustering), switch to the
+precision-tuned model:
+
+```dotenv
+PYANNOTE_MODEL=pyannote/speaker-diarization-precision
 ```
 
 Without a token, or if the token has not accepted the model conditions, the app

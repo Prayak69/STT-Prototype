@@ -48,7 +48,7 @@ if (-not (Test-Path ".env")) {
 
 Write-Host ""
 Write-Host "Next steps:"
-Write-Host "  1. Accept the pyannote model conditions at https://huggingface.co/pyannote/speaker-diarization-community-1"
+Write-Host "  1. Accept the pyannote model conditions at https://huggingface.co/pyannote/speaker-diarization-3.1"
 Write-Host "  2. Put HF_TOKEN in .env"
 Write-Host "  3. Run: .venv\Scripts\streamlit.exe run app.py"
 

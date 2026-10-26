@@ -14,7 +14,11 @@ from dotenv import load_dotenv
 
 load_dotenv(Path(__file__).resolve().parent / ".env")
 
-DEFAULT_MODEL = "pyannote/speaker-diarization-community-1"
+# Most accurate general-purpose pyannote diarization model.
+# If you still get over-splitting (e.g. 2 speakers heard as 4), try
+# "pyannote/speaker-diarization-precision" instead — it favors fewer,
+# higher-confidence speaker clusters.
+DEFAULT_MODEL = "pyannote/speaker-diarization-3.1"
 
 
 class DiarizationUnavailable(RuntimeError):
