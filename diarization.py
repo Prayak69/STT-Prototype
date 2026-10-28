@@ -94,6 +94,12 @@ class SpeakerDiarizer:
         import torch
         from pyannote.audio import Pipeline
 
+        # Let pyannote use every core (torch defaults to fewer threads).
+        try:
+            torch.set_num_threads(max(1, os.cpu_count() or 1))
+        except Exception:
+            pass
+
         pipeline = Pipeline.from_pretrained(
             self.model_name,
             token=self.token,

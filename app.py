@@ -13,6 +13,10 @@ from audio_io import format_duration
 from transcription_service import transcribe
 from conformer_engine import LANGUAGE_LABELS, assets_available
 from diarization import diarization_status, is_diarization_configured
+from translation import is_translation_configured, translate_turns
+from warmup import start_warmup
+
+start_warmup()
 
 ALLOWED_EXTENSIONS = ["mp3", "wav", "m4a"]
 MAX_FILE_SIZE_MB = 25
@@ -332,7 +336,7 @@ if uploaded_file is not None:
             "<div style='font-size:0.8rem; font-weight:600; color:#475569; margin:0.75rem 0 0.35rem;'>Transcription settings</div>",
             unsafe_allow_html=True,
         )
-        ctrl_lang, ctrl_mode, ctrl_spk, ctrl_first = st.columns(4)
+        ctrl_lang, ctrl_mode, ctrl_spk = st.columns(3)
         with ctrl_lang:
             language_label = st.selectbox(
                 "Language",
@@ -353,13 +357,6 @@ if uploaded_file is not None:
                 ["Auto-detect", "1", "2", "3", "4", "5", "6"],
                 index=0,
                 key="asr_speakers",
-            )
-        with ctrl_first:
-            first_speaker = st.selectbox(
-                "First speaker",
-                ["Doctor", "Patient"],
-                index=0,
-                key="asr_first_speaker",
             )
 
         diarization_enabled = st.checkbox(
@@ -397,13 +394,20 @@ if uploaded_file is not None:
                         decoding=DECODING_OPTIONS[decoding_label],
                         num_speakers=num_speakers,
                         enable_diarization=diarization_enabled,
-                        first_speaker=first_speaker,
                     )
                 except Exception as exc:
                     st.session_state.processing = False
                     progress_bar.empty()
                     st.error(f"❌ Transcription failed: {exc}")
                 else:
+                    if is_translation_configured():
+                        with st.spinner("Translating transcript to English..."):
+                            try:
+                                res["transcript_en"] = translate_turns(
+                                    res["transcript"]
+                                )
+                            except Exception as exc:
+                                st.warning(f"English translation failed: {exc}")
                     res["details"]["processed_at"] = datetime.now().strftime(
                         "%Y-%m-%d %H:%M"
                     )
@@ -454,23 +458,34 @@ if current_result:
     tab_conv, tab_meta = st.tabs(["💬 Dialogue Transcript", "📋 File & Audio Details"])
 
     with tab_conv:
+        transcript_en = current_result.get("transcript_en") or []
+
+        if transcript_en:
+            lang_choice = st.radio(
+                "Transcript language",
+                ["English", "Original"],
+                horizontal=True,
+                key="transcript_lang_choice",
+            )
+        else:
+            lang_choice = "Original"
+
+        active_transcript = (
+            transcript_en if lang_choice == "English" else transcript
+        )
+
         q_filter = st.text_input("Search in transcript turns...", placeholder="Filter by symptom, medicine, or word...", label_visibility="collapsed")
 
-        filtered_turns = transcript
+        filtered_turns = active_transcript
         if q_filter:
             q_lower = q_filter.lower()
-            filtered_turns = [t for t in transcript if q_lower in t["text"].lower() or q_lower in t["speaker"].lower()]
+            filtered_turns = [t for t in active_transcript if q_lower in t["text"].lower() or q_lower in t["speaker"].lower()]
 
         if not filtered_turns:
             st.info(f"No dialogue turns match '{q_filter}'.")
         else:
             for turn in filtered_turns:
-                if turn["speaker"] == "Doctor":
-                    badge_cls = "speaker-badge-doctor"
-                elif turn["speaker"] == "Patient":
-                    badge_cls = "speaker-badge-patient"
-                else:
-                    badge_cls = "speaker-badge-speaker"
+                badge_cls = "speaker-badge-speaker"
                 st.markdown(f"""
                     <div class="speaker-bubble">
                         <div class="speaker-col-meta">
@@ -484,31 +499,66 @@ if current_result:
         st.markdown("<div style='margin-top:1.25rem;'></div>", unsafe_allow_html=True)
 
         plain_text = "\n\n".join([f"[{t['timestamp']}] {t['speaker']}: {t['text']}" for t in transcript])
+        plain_text_en = (
+            "\n\n".join(
+                [f"[{t['timestamp']}] {t['speaker']}: {t['text']}" for t in transcript_en]
+            )
+            if transcript_en
+            else ""
+        )
         json_text = json.dumps(current_result, indent=2, ensure_ascii=False)
 
-        col_copy, col_down_txt, col_down_json = st.columns([1, 1, 1])
-        with col_copy:
-            if st.button("📋  Show Plaintext for Copy", use_container_width=True):
-                st.code(plain_text, language="markdown")
-                st.caption("Press Ctrl+A → Ctrl+C to copy.")
+        if st.button("📋  Show Plaintext for Copy", use_container_width=True):
+            st.code(plain_text_en or plain_text, language="markdown")
+            st.caption("Press Ctrl+A → Ctrl+C to copy.")
 
-        with col_down_txt:
-            st.download_button(
-                label="⬇️  Download .txt",
-                data=plain_text,
-                file_name=f"{active_title}_transcript.txt",
-                mime="text/plain",
-                use_container_width=True,
-            )
+        if transcript_en:
+            col_orig, col_en, col_json = st.columns(3)
+            with col_orig:
+                st.download_button(
+                    label="⬇️  Download Original (.txt)",
+                    data=plain_text,
+                    file_name=f"{active_title}_original.txt",
+                    mime="text/plain",
+                    use_container_width=True,
+                )
 
-        with col_down_json:
-            st.download_button(
-                label="⬇️  Download .json",
-                data=json_text,
-                file_name=f"{active_title}_transcript.json",
-                mime="application/json",
-                use_container_width=True,
-            )
+            with col_en:
+                st.download_button(
+                    label="⬇️  Download English (.txt)",
+                    data=plain_text_en,
+                    file_name=f"{active_title}_english.txt",
+                    mime="text/plain",
+                    use_container_width=True,
+                )
+
+            with col_json:
+                st.download_button(
+                    label="⬇️  Download .json",
+                    data=json_text,
+                    file_name=f"{active_title}_transcript.json",
+                    mime="application/json",
+                    use_container_width=True,
+                )
+        else:
+            col_orig, col_json = st.columns(2)
+            with col_orig:
+                st.download_button(
+                    label="⬇️  Download .txt",
+                    data=plain_text,
+                    file_name=f"{active_title}_transcript.txt",
+                    mime="text/plain",
+                    use_container_width=True,
+                )
+
+            with col_json:
+                st.download_button(
+                    label="⬇️  Download .json",
+                    data=json_text,
+                    file_name=f"{active_title}_transcript.json",
+                    mime="application/json",
+                    use_container_width=True,
+                )
 
     with tab_meta:
         st.markdown("""

@@ -92,9 +92,12 @@ mode, then generate the transcript.
 - **CTC** is faster and supports confidence estimation.
 
 Speaker turns come from pyannote timestamps. Each turn is transcribed
-separately, then adjacent turns from the same speaker are merged. The first
-detected speaker is labeled `Doctor` by default (configurable to `Patient` in
-the upload controls).
+separately, then adjacent turns from the same speaker are merged. Speakers are
+labeled `Speaker 1`, `Speaker 2`, and so on.
+
+When `GEMINI_API_KEY` is configured, each transcript is also translated to
+English. The result card lets you switch between the original and the English
+transcript and download either one (or the full JSON containing both).
 
 Generated transcripts are kept only in the current browser session. There is no
 preloaded demo history; uploading `audio 13.mp3` produces a real transcript

@@ -62,17 +62,8 @@ def _prepare_segments(
     return merged
 
 
-def _speaker_names(first_speaker: str, count: int) -> list[str]:
-    if first_speaker.strip().lower().startswith("patient"):
-        base = ["Patient", "Doctor"]
-    else:
-        base = ["Doctor", "Patient"]
-    names = list(base)
-    index = 3
-    while len(names) < count:
-        names.append(f"Speaker {index}")
-        index += 1
-    return names[:count]
+def _speaker_names(count: int) -> list[str]:
+    return [f"Speaker {index}" for index in range(1, max(1, count) + 1)]
 
 
 def _clean_text(text: str) -> str:
@@ -220,7 +211,6 @@ def transcribe(
     decoding: str = "rnnt",
     num_speakers: Optional[int] = None,
     enable_diarization: bool = True,
-    first_speaker: str = "Doctor",
 ) -> dict[str, Any]:
     """Run IndicConformer ASR with pyannote speaker labeling."""
     decoding = (decoding or "ctc").lower()
@@ -276,7 +266,7 @@ def transcribe(
             if segment["speaker"] not in speakers:
                 speakers.append(segment["speaker"])
 
-        names = _speaker_names(first_speaker, max(1, len(speakers)))
+        names = _speaker_names(max(1, len(speakers)))
         speaker_map = dict(zip(speakers, names))
 
         _notify(
