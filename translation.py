@@ -13,6 +13,54 @@ load_dotenv(Path(__file__).resolve().parent / ".env")
 
 DEFAULT_MODEL = "gemini-3.5-flash"
 
+# The summary prompt lives in code and is sent with every request so the model
+# is always grounded in the transcript and never invents its own content.
+SUMMARY_PROMPT = """You are a careful clinical conversation summarizer.
+
+You will receive a diarized transcript. Produce a detailed, nuanced, and
+well-structured summary.
+
+STRICT RULES:
+- Use ONLY information explicitly stated in the transcript.
+- Do NOT invent, infer, diagnose, or add medical advice.
+- Do NOT use outside knowledge.
+- If a section has no relevant information, write "Not discussed."
+- Preserve names, IDs, numbers, amounts, dates, medicines, and policy details
+  exactly as stated.
+- Keep speaker labels (Speaker 1, Speaker 2, ...) as given.
+- Write the summary in English regardless of the transcript language.
+
+Return valid Markdown using exactly these sections:
+
+## Overview
+A 2-4 sentence summary of the conversation's purpose and outcome.
+
+## Participants
+List each speaker and what the transcript reveals about their role. Do not
+guess beyond what is said.
+
+## Key Topics Discussed
+Bullet points of the main topics.
+
+## Details and Facts Mentioned
+Bullet points of concrete facts: names, IDs, policy numbers, dates, amounts,
+medicines, symptoms, locations, etc.
+
+## Decisions and Agreements
+What was decided or agreed, if anything.
+
+## Action Items and Next Steps
+Who needs to do what, if stated.
+
+## Open Questions and Unresolved Points
+Anything left unclear or pending.
+
+## Important Quotes
+Up to 3 short verbatim quotes, each with speaker and timestamp.
+
+TRANSCRIPT:
+"""
+
 
 def _env_api_key() -> Optional[str]:
     for name in ("GEMINI_API_KEY", "GOOGLE_API_KEY"):
@@ -95,3 +143,22 @@ def translate_turns(turns: list[dict]) -> list[dict]:
         merged["text"] = str(item.get("text", original.get("text", "")))
         result.append(merged)
     return result
+
+
+def summarize_turns(turns: list[dict]) -> str:
+    """Summarize ``turns`` into structured Markdown, grounded in the transcript."""
+    if not turns:
+        return ""
+
+    lines = [
+        f"[{turn.get('timestamp', '')}] {turn.get('speaker', '')}: {turn.get('text', '')}"
+        for turn in turns
+    ]
+    transcript_text = "\n".join(lines)
+
+    client = _client()
+    response = client.models.generate_content(
+        model=os.environ.get("GEMINI_MODEL", DEFAULT_MODEL),
+        contents=SUMMARY_PROMPT + transcript_text,
+    )
+    return (response.text or "").strip()

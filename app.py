@@ -13,7 +13,12 @@ from audio_io import format_duration
 from transcription_service import transcribe
 from conformer_engine import LANGUAGE_LABELS, assets_available
 from diarization import diarization_status, is_diarization_configured
-from translation import is_translation_configured, translate_turns
+from translation import (
+    is_translation_configured,
+    summarize_turns,
+    translate_turns,
+)
+from timing import ProcessTimer
 from warmup import start_warmup
 
 start_warmup()
@@ -375,6 +380,7 @@ if uploaded_file is not None:
         with col_btn:
             if st.button("🚀  Generate Transcript", type="primary", use_container_width=True, disabled=st.session_state.processing):
                 st.session_state.processing = True
+                timer = ProcessTimer().start()
                 progress_bar = st.progress(0, text="Initializing transcription pipeline...")
 
                 def on_progress(p: float, text: str):
@@ -408,6 +414,23 @@ if uploaded_file is not None:
                                 )
                             except Exception as exc:
                                 st.warning(f"English translation failed: {exc}")
+                        with st.spinner("Summarizing conversation..."):
+                            try:
+                                source = res.get("transcript_en") or res["transcript"]
+                                res["summary"] = summarize_turns(source)
+                            except Exception as exc:
+                                st.warning(f"Summary generation failed: {exc}")
+                    elapsed = timer.stop()
+                    res["details"]["processing_time_seconds"] = round(elapsed, 2)
+                    res["details"]["processing_time_minutes"] = round(
+                        elapsed / 60.0, 2
+                    )
+                    res["details"]["processing_time_display"] = timer.format()
+                    print(
+                        "[timing] end-to-end processing:",
+                        timer.format_minutes(),
+                        f"({timer.format()})",
+                    )
                     res["details"]["processed_at"] = datetime.now().strftime(
                         "%Y-%m-%d %H:%M"
                     )
@@ -447,6 +470,7 @@ if current_result:
                 Language: <strong>{details.get('language', 'Hinglish')}</strong> &nbsp;·&nbsp;
                 Duration: <strong>{details.get('audio_duration', '1m 12s')}</strong> &nbsp;·&nbsp;
                 Specialty: <strong>{details.get('medical_specialty', 'General Medicine')}</strong>
+                &nbsp;·&nbsp; Processing: <strong>{details.get('processing_time_display', '—')}</strong>
             </div>
 
             {banner_html}
@@ -455,11 +479,101 @@ if current_result:
     if details.get("diarization_warning"):
         st.warning(details["diarization_warning"])
 
-    tab_conv, tab_meta = st.tabs(["💬 Dialogue Transcript", "📋 File & Audio Details"])
+    tab_summary, tab_conv, tab_meta = st.tabs([
+        "🧾 Conversation Summary",
+        "💬 Dialogue Transcript",
+        "📋 File & Audio Details",
+    ])
+
+    transcript_en = current_result.get("transcript_en") or []
+    plain_text = "\n\n".join([f"[{t['timestamp']}] {t['speaker']}: {t['text']}" for t in transcript])
+    plain_text_en = (
+        "\n\n".join(
+            [f"[{t['timestamp']}] {t['speaker']}: {t['text']}" for t in transcript_en]
+        )
+        if transcript_en
+        else ""
+    )
+    json_text = json.dumps(current_result, indent=2, ensure_ascii=False)
+
+    with tab_summary:
+        if details.get("processing_time_minutes") is not None:
+            st.markdown(
+                "<div style='font-size:0.85rem; color:#475569; "
+                "margin-bottom:0.75rem;'>⏱ <strong>Processing time:</strong> "
+                f"{details.get('processing_time_display', '—')} "
+                f"({float(details.get('processing_time_minutes', 0)):.2f} min)</div>",
+                unsafe_allow_html=True,
+            )
+        summary = current_result.get("summary")
+        if summary:
+            st.markdown(summary)
+        else:
+            st.info(
+                "No summary is available yet. Add GEMINI_API_KEY to .env and "
+                "regenerate the transcript, or create one below."
+            )
+            if st.button("🧾  Generate Summary", key="generate_summary"):
+                source = transcript_en or transcript
+                with st.spinner("Summarizing conversation..."):
+                    try:
+                        current_result["summary"] = summarize_turns(source)
+                        st.rerun()
+                    except Exception as exc:
+                        st.error(f"Summary generation failed: {exc}")
+
+        st.markdown("<div style='margin-top:1.25rem;'></div>", unsafe_allow_html=True)
+        st.markdown(
+            "<div style='font-size:0.8rem; font-weight:600; color:#475569;'>Download transcript</div>",
+            unsafe_allow_html=True,
+        )
+
+        if transcript_en:
+            d_orig, d_en, d_json = st.columns(3)
+            with d_orig:
+                st.download_button(
+                    label="⬇️  Original (.txt)",
+                    data=plain_text,
+                    file_name=f"{active_title}_original.txt",
+                    mime="text/plain",
+                    use_container_width=True,
+                )
+            with d_en:
+                st.download_button(
+                    label="⬇️  English (.txt)",
+                    data=plain_text_en,
+                    file_name=f"{active_title}_english.txt",
+                    mime="text/plain",
+                    use_container_width=True,
+                )
+            with d_json:
+                st.download_button(
+                    label="⬇️  JSON (both)",
+                    data=json_text,
+                    file_name=f"{active_title}_transcript.json",
+                    mime="application/json",
+                    use_container_width=True,
+                )
+        else:
+            d_orig, d_json = st.columns(2)
+            with d_orig:
+                st.download_button(
+                    label="⬇️  Original (.txt)",
+                    data=plain_text,
+                    file_name=f"{active_title}_transcript.txt",
+                    mime="text/plain",
+                    use_container_width=True,
+                )
+            with d_json:
+                st.download_button(
+                    label="⬇️  JSON",
+                    data=json_text,
+                    file_name=f"{active_title}_transcript.json",
+                    mime="application/json",
+                    use_container_width=True,
+                )
 
     with tab_conv:
-        transcript_en = current_result.get("transcript_en") or []
-
         if transcript_en:
             lang_choice = st.radio(
                 "Transcript language",
@@ -498,67 +612,9 @@ if current_result:
 
         st.markdown("<div style='margin-top:1.25rem;'></div>", unsafe_allow_html=True)
 
-        plain_text = "\n\n".join([f"[{t['timestamp']}] {t['speaker']}: {t['text']}" for t in transcript])
-        plain_text_en = (
-            "\n\n".join(
-                [f"[{t['timestamp']}] {t['speaker']}: {t['text']}" for t in transcript_en]
-            )
-            if transcript_en
-            else ""
-        )
-        json_text = json.dumps(current_result, indent=2, ensure_ascii=False)
-
         if st.button("📋  Show Plaintext for Copy", use_container_width=True):
             st.code(plain_text_en or plain_text, language="markdown")
             st.caption("Press Ctrl+A → Ctrl+C to copy.")
-
-        if transcript_en:
-            col_orig, col_en, col_json = st.columns(3)
-            with col_orig:
-                st.download_button(
-                    label="⬇️  Download Original (.txt)",
-                    data=plain_text,
-                    file_name=f"{active_title}_original.txt",
-                    mime="text/plain",
-                    use_container_width=True,
-                )
-
-            with col_en:
-                st.download_button(
-                    label="⬇️  Download English (.txt)",
-                    data=plain_text_en,
-                    file_name=f"{active_title}_english.txt",
-                    mime="text/plain",
-                    use_container_width=True,
-                )
-
-            with col_json:
-                st.download_button(
-                    label="⬇️  Download .json",
-                    data=json_text,
-                    file_name=f"{active_title}_transcript.json",
-                    mime="application/json",
-                    use_container_width=True,
-                )
-        else:
-            col_orig, col_json = st.columns(2)
-            with col_orig:
-                st.download_button(
-                    label="⬇️  Download .txt",
-                    data=plain_text,
-                    file_name=f"{active_title}_transcript.txt",
-                    mime="text/plain",
-                    use_container_width=True,
-                )
-
-            with col_json:
-                st.download_button(
-                    label="⬇️  Download .json",
-                    data=json_text,
-                    file_name=f"{active_title}_transcript.json",
-                    mime="application/json",
-                    use_container_width=True,
-                )
 
     with tab_meta:
         st.markdown("""
@@ -611,6 +667,10 @@ if current_result:
                     <div style="font-size:0.75rem; color:#64748b; font-weight:500; text-transform:uppercase; letter-spacing:0.03em; margin-bottom:0.25rem;">Channels</div>
                     <div style="font-size:0.95rem; color:#0f172a; font-weight:600;">{ch}</div>
                 </div>
+                <div>
+                    <div style="font-size:0.75rem; color:#64748b; font-weight:500; text-transform:uppercase; letter-spacing:0.03em; margin-bottom:0.25rem;">Processing Time</div>
+                    <div style="font-size:0.95rem; color:#0f172a; font-weight:600;">{ptime}</div>
+                </div>
             </div>
         """.format(
             fname=details.get("file_name", "audio_recording"),
@@ -625,6 +685,7 @@ if current_result:
             spec=details.get("medical_specialty", "General Medicine"),
             sr=details.get("sample_rate", "—"),
             ch=details.get("channels", "—"),
+            ptime=details.get("processing_time_display", "—"),
         ), unsafe_allow_html=True)
 
     st.markdown("</div>", unsafe_allow_html=True)

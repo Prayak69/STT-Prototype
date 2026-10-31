@@ -96,8 +96,10 @@ separately, then adjacent turns from the same speaker are merged. Speakers are
 labeled `Speaker 1`, `Speaker 2`, and so on.
 
 When `GEMINI_API_KEY` is configured, each transcript is also translated to
-English. The result card lets you switch between the original and the English
-transcript and download either one (or the full JSON containing both).
+English and summarized. The primary tab shows a detailed, structured summary
+that is grounded only in the transcript (the prompt lives in `translation.py`).
+The result card lets you switch between the original and the English transcript
+and download either one (or the full JSON containing both).
 
 Generated transcripts are kept only in the current browser session. There is no
 preloaded demo history; uploading `audio 13.mp3` produces a real transcript
@@ -111,6 +113,9 @@ from that file.
 | `transcription_service.py` | ASR + diarization orchestration |
 | `conformer_engine.py` | IndicConformer ONNX Runtime inference |
 | `diarization.py` | pyannote.audio pipeline wrapper |
+| `translation.py` | Gemini translation + grounded conversation summary |
+| `timing.py` | End-to-end processing timer |
+| `warmup.py` | Background model preloading at startup |
 | `audio_io.py` | WAV/MP3/M4A decoding to 16 kHz mono |
 | `conformer_assets/` | ONNX model, vocab, language masks (gitignored) |
 | `setup.ps1` | Environment and asset verification script |
