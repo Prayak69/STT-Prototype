@@ -258,6 +258,7 @@ def transcribe(
 
     _notify(progress_callback, 0.40, "Loading IndicConformer ONNX models...")
     engine = get_engine()
+    engine.warmup(lang="hi", mode="ctc")  # or "rnnt" if prefer
 
     turns: list[dict] = []
     confidence: Optional[float] = None
