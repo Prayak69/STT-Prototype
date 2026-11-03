@@ -14,7 +14,11 @@ from dotenv import load_dotenv
 
 load_dotenv(Path(__file__).resolve().parent / ".env")
 
-DEFAULT_MODEL = "pyannote/speaker-diarization-community-1"
+# Most accurate general-purpose pyannote diarization model.
+# If you still get over-splitting (e.g. 2 speakers heard as 4), try
+# "pyannote/speaker-diarization-precision" instead — it favors fewer,
+# higher-confidence speaker clusters.
+DEFAULT_MODEL = "pyannote/speaker-diarization-3.1"
 
 
 class DiarizationUnavailable(RuntimeError):
@@ -89,6 +93,12 @@ class SpeakerDiarizer:
 
         import torch
         from pyannote.audio import Pipeline
+
+        # Let pyannote use every core (torch defaults to fewer threads).
+        try:
+            torch.set_num_threads(max(1, os.cpu_count() or 1))
+        except Exception:
+            pass
 
         pipeline = Pipeline.from_pretrained(
             self.model_name,

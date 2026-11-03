@@ -9,7 +9,7 @@ speaker diarization.
 | Stage | Engine |
 |---|---|
 | Speech-to-text | IndicConformer-600M-Multilingual, ONNX Runtime, CPU |
-| Speaker labeling | pyannote.audio 4.x (`pyannote/speaker-diarization-community-1`) |
+| Speaker labeling | pyannote.audio 4.x (`pyannote/speaker-diarization-3.1`) |
 | Frontend | Streamlit (`app.py`) |
 
 The Conformer ONNX assets are stored locally in `conformer_assets/`. Only the
@@ -36,13 +36,20 @@ Or run the setup script:
 Speaker labeling needs a Hugging Face token:
 
 1. Accept the conditions at
-   https://huggingface.co/pyannote/speaker-diarization-community-1
+   https://huggingface.co/pyannote/speaker-diarization-3.1
 2. Create a token at https://huggingface.co/settings/tokens
 3. Add it to `.env`:
 
 ```dotenv
 HF_TOKEN=hf_...
-PYANNOTE_MODEL=pyannote/speaker-diarization-community-1
+PYANNOTE_MODEL=pyannote/speaker-diarization-3.1
+```
+
+If two speakers are being split into four (over-clustering), switch to the
+precision-tuned model:
+
+```dotenv
+PYANNOTE_MODEL=pyannote/speaker-diarization-precision
 ```
 
 Without a token, or if the token has not accepted the model conditions, the app
@@ -85,9 +92,14 @@ mode, then generate the transcript.
 - **CTC** is faster and supports confidence estimation.
 
 Speaker turns come from pyannote timestamps. Each turn is transcribed
-separately, then adjacent turns from the same speaker are merged. The first
-detected speaker is labeled `Doctor` by default (configurable to `Patient` in
-the upload controls).
+separately, then adjacent turns from the same speaker are merged. Speakers are
+labeled `Speaker 1`, `Speaker 2`, and so on.
+
+When `GEMINI_API_KEY` is configured, each transcript is also translated to
+English and summarized. The primary tab shows a detailed, structured summary
+that is grounded only in the transcript (the prompt lives in `translation.py`).
+The result card lets you switch between the original and the English transcript
+and download either one (or the full JSON containing both).
 
 Generated transcripts are kept only in the current browser session. There is no
 preloaded demo history; uploading `audio 13.mp3` produces a real transcript
@@ -101,6 +113,9 @@ from that file.
 | `transcription_service.py` | ASR + diarization orchestration |
 | `conformer_engine.py` | IndicConformer ONNX Runtime inference |
 | `diarization.py` | pyannote.audio pipeline wrapper |
+| `translation.py` | Gemini translation + grounded conversation summary |
+| `timing.py` | End-to-end processing timer |
+| `warmup.py` | Background model preloading at startup |
 | `audio_io.py` | WAV/MP3/M4A decoding to 16 kHz mono |
 | `conformer_assets/` | ONNX model, vocab, language masks (gitignored) |
 | `setup.ps1` | Environment and asset verification script |
