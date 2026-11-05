@@ -302,7 +302,9 @@ export function LiveTranscription({
       <div className="flex items-center justify-between border-t border-slate-100 px-4 py-2 text-[10px] text-slate-400 sm:px-5">
         <span>
           {hasDiarization
-            ? "Speaker-separated transcript (batch diarization)."
+            ? isBatch
+              ? "Speaker-separated transcript (batch diarization)."
+              : "Speaker-separated transcript (realtime diarization; labels can lag a few seconds)."
             : isBatch
             ? "Every segment from the uploaded file."
             : "Language is detected per utterance."}

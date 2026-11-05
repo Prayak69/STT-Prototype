@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { IncomingMessage, Server as HttpServer } from "node:http";
 import WebSocket, { WebSocketServer } from "ws";
 import { config } from "./config";
+import { createDiarizationSession, type DiarizationSession } from "./diarization";
 import { logger } from "./logger";
 
 const REALTIME_PATH = "/ws/stt/realtime";
@@ -9,6 +10,15 @@ const BATCH_PATH = "/ws/stt/batch";
 /** Legacy realtime path kept for older clients. */
 const LEGACY_PATH = "/ws/stt";
 const PCM_FRAME_BYTES = 1024;
+/** One 1,024-byte frame is 512 samples at 16 kHz. */
+const PCM_FRAME_MS = 32;
+
+interface PendingTranscript {
+  segment_id?: string | number;
+  segment_index?: number;
+  start: number;
+  end: number;
+}
 
 /**
  * Batch uploads are sent faster than real time, so the browser uses a
@@ -171,6 +181,98 @@ export function attachSttProxy(server: HttpServer): { close: () => void } {
 
     const startedAt = Date.now();
 
+    /**
+     * Realtime-only speaker labeling. `audioClockMs` is the stream time of the
+     * audio actually forwarded to Gnani, so it lines up with the sidecar's
+     * timeline (both start at 0 and advance one 32 ms frame at a time).
+     */
+    let audioClockMs = 0;
+    const pendingTranscripts = new Map<string, PendingTranscript>();
+    let diarization: DiarizationSession | null = null;
+
+    const emitSpeakerUpdates = () => {
+      if (!diarization || pendingTranscripts.size === 0) return;
+
+      const updates: Array<Record<string, unknown>> = [];
+      const staleBefore = audioClockMs / 1000 - 120;
+      for (const [key, item] of pendingTranscripts) {
+        if (item.end < staleBefore) {
+          pendingTranscripts.delete(key);
+          continue;
+        }
+        const speakerId = diarization.speakerFor(item.start, item.end);
+        if (speakerId === null) continue;
+        updates.push({
+          segment_id: item.segment_id,
+          segment_index: item.segment_index,
+          speaker_id: speakerId,
+        });
+        pendingTranscripts.delete(key);
+      }
+
+      if (updates.length === 0 || client.readyState !== WebSocket.OPEN) return;
+
+      sendJson(client, { type: "speaker_update", updates });
+      log("speaker labels updated", { count: updates.length });
+    };
+
+    if (!isBatch && config.diarization.enabled) {
+      diarization = createDiarizationSession({
+        sessionId,
+        onTimeline: emitSpeakerUpdates,
+        log,
+      });
+    }
+
+    /**
+     * Attach `speaker_id` to a Gnani transcript frame when the sidecar already
+     * knows the region. Otherwise remember the interval and send a
+     * `speaker_update` once the next window covers it.
+     */
+    const annotateTranscript = (text: string): string => {
+      if (!diarization) return text;
+
+      let frame: Record<string, unknown>;
+      try {
+        frame = JSON.parse(text) as Record<string, unknown>;
+      } catch {
+        return text;
+      }
+      if (frame.type !== "transcript") return text;
+      if (typeof frame.speaker_id === "number") return text;
+
+      const durationMs = Number(frame.audio_duration_ms);
+      const end = audioClockMs / 1000;
+      const speech = Number.isFinite(durationMs) && durationMs > 0 ? durationMs / 1000 : 1.5;
+      const start = Math.max(0, end - speech);
+
+      const speakerId = diarization.speakerFor(start, end);
+      if (speakerId !== null) {
+        frame.speaker_id = speakerId;
+        return JSON.stringify(frame);
+      }
+
+      const segmentId = frame.segment_id as string | number | undefined;
+      const segmentIndex =
+        typeof frame.segment_index === "number" ? frame.segment_index : undefined;
+      const key =
+        segmentId !== undefined
+          ? `id:${segmentId}`
+          : segmentIndex !== undefined
+            ? `index:${segmentIndex}`
+            : null;
+
+      if (key && pendingTranscripts.size < 1000) {
+        pendingTranscripts.set(key, {
+          segment_id: segmentId,
+          segment_index: segmentIndex,
+          start,
+          end,
+        });
+      }
+      return text;
+    };
+
     // Batch-only flow control. Realtime sockets keep their original behaviour.
     const batchQueue: Buffer[] = [];
     let batchForwarded = 0;
@@ -241,7 +343,8 @@ export function attachSttProxy(server: HttpServer): { close: () => void } {
       if (!isBinary) {
         const text = payload.toString("utf8");
         if (text.includes('"transcript"')) transcripts += 1;
-        if (client.readyState === WebSocket.OPEN) client.send(text);
+        if (client.readyState !== WebSocket.OPEN) return;
+        client.send(isBatch ? text : annotateTranscript(text));
         return;
       }
 
@@ -281,6 +384,7 @@ export function attachSttProxy(server: HttpServer): { close: () => void } {
 
     upstream.on("close", (code, reason) => {
       stopBatchPump();
+      diarization?.close();
       const reasonText = reason.toString().slice(0, 200);
       log("upstream closed", {
         code,
@@ -351,6 +455,8 @@ export function attachSttProxy(server: HttpServer): { close: () => void } {
 
         upstream.send(frame);
         framesSent += 1;
+        audioClockMs += PCM_FRAME_MS;
+        diarization?.pushFrame(frame);
         return;
       }
 
@@ -383,6 +489,7 @@ export function attachSttProxy(server: HttpServer): { close: () => void } {
     client.on("close", (code, reason) => {
       clientClosed = true;
       stopBatchPump();
+      diarization?.close();
       const durationMs = Date.now() - startedAt;
       log("browser closed", {
         code,
