@@ -44,6 +44,12 @@ export interface TranscriptSegment {
   endTime?: number;
 }
 
+interface SpeakerUpdate {
+  segment_id?: string | number;
+  segment_index?: number;
+  speaker_id?: number;
+}
+
 interface ServerFrame {
   type?: string;
   message?: string;
@@ -53,6 +59,10 @@ interface ServerFrame {
   segment_id?: string | number;
   segment_index?: number;
   detected_language_code?: string;
+  /** Present when the server could label a transcript immediately. */
+  speaker_id?: number;
+  /** Late labels for transcripts that arrived before diarization caught up. */
+  updates?: SpeakerUpdate[];
 }
 
 interface StopWaiter {
@@ -296,14 +306,50 @@ export function useAudioStreaming() {
       text,
       language: describeLanguage(frame.detected_language_code),
       segmentIndex: frame.segment_index,
+      speakerId: typeof frame.speaker_id === "number" ? frame.speaker_id : null,
       receivedAt: Date.now(),
       startTime: startedAtRef.current
         ? (Date.now() - startedAtRef.current) / 1000
         : 0,
     };
 
+    if (typeof frame.speaker_id === "number") {
+      console.info("[stt] transcript with speaker", {
+        key,
+        speakerId: frame.speaker_id,
+      });
+    }
+
     setSegments((previous) => [...previous, segment]);
     setSessionSegments((count) => count + 1);
+  }, []);
+
+  /** Attach late speaker labels sent by the realtime diarization sidecar. */
+  const applySpeakerUpdates = useCallback((updates: SpeakerUpdate[]) => {
+    if (updates.length === 0) return;
+    console.info("[stt] speaker_update", updates);
+
+    setSegments((previous) => {
+      let changed = false;
+      const next = previous.map((segment) => {
+        const match = updates.find((update) => {
+          if (update.segment_id !== undefined && update.segment_id !== null) {
+            return String(update.segment_id) === segment.key;
+          }
+          return (
+            update.segment_index !== undefined &&
+            update.segment_index === segment.segmentIndex
+          );
+        });
+
+        if (!match || typeof match.speaker_id !== "number") return segment;
+        if (segment.speakerId === match.speaker_id) return segment;
+        changed = true;
+        return { ...segment, speakerId: match.speaker_id };
+      });
+
+      return changed ? next : previous;
+    });
   }, []);
 
   const handleFrame = useCallback(
@@ -354,6 +400,11 @@ export function useAudioStreaming() {
           break;
         }
 
+        case "speaker_update": {
+          applySpeakerUpdates(frame.updates ?? []);
+          break;
+        }
+
         case "error": {
           console.warn("[stt] server error:", frame.message ?? "(no message)");
           setIsProcessing(false);
@@ -375,7 +426,7 @@ export function useAudioStreaming() {
           break;
       }
     },
-    [appendTranscript, clearConnectTimer, fail, scheduleFinalSettle, startDurationTimer, updatePhase],
+    [appendTranscript, applySpeakerUpdates, clearConnectTimer, fail, scheduleFinalSettle, startDurationTimer, updatePhase],
   );
 
   const setupAudio = useCallback(

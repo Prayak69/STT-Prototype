@@ -8,7 +8,7 @@ Two independent transcription pipelines, one clinical dashboard:
 | --- | --- | --- |
 | Input | Microphone | Audio file (≤ 10 MB) |
 | Endpoint | `WS /ws/stt/realtime` → Gnani realtime WebSocket | `POST /api/stt/batch/diarize` → Gnani Batch Jobs REST API |
-| Output | Live transcript, language per utterance | Full transcript + **`speaker_id` per segment** (diarized) + timestamps |
+| Output | Live transcript, language per utterance, **`Speaker N`** from the local pyannote sidecar | Full transcript + **`speaker_id` per segment** (diarized by Gnani) + timestamps |
 | Latency | Sub-second per utterance | Minutes (async job, polled every 10 s) |
 | Languages | Auto-detected (`indic-auto`) | Auto-detected (`indic-auto`) |
 
@@ -20,10 +20,11 @@ The transcript panel stays visible on the right on wide screens and opens as a s
 
 **Requirements:** Node.js **20.19+** (or 22.12+), a microphone (for realtime), a Gnani API key, and optionally a Google Gemini key for summaries/translation.
 
-1. Put your keys in `.env` at the project root (a file already exists — keep it out of version control):
+1. Put your keys in `.env` in this folder (`Gnani-Hackathon/.env` — keep it out of version control). Include `HF_TOKEN` for the pyannote sidecar:
 
    ```env
    GNANI_API_KEY=your-gnani-api-key
+   HF_TOKEN=your-hugging-face-token
    PORT=8787
 
    # Optional: clinical summaries and transcript translation
@@ -56,6 +57,53 @@ Open **http://localhost:8787** — Express serves the built frontend and hosts b
 
 > Do **not** open the HTML file directly (`file://`). `getUserMedia` requires a secure context: `localhost` or HTTPS.
 
+### Realtime speaker labels (pyannote sidecar)
+
+Gnani realtime returns text only — there is no `speaker_id` on the streaming
+API. The app adds one locally with `pyannote/speaker-diarization-3.1`, without
+touching the batch path (Gnani Batch already diarizes).
+
+```
+Browser ──PCM──► Node /ws/stt/realtime ──PCM──► Gnani (connected/transcript)
+                            │
+                            └── same PCM ──► diarizer_server.py (pyannote 3.1)
+                                                  └── speaker timeline
+```
+
+The sidecar re-diarizes the trailing window every few seconds and returns a
+stable `Speaker 1` / `Speaker 2` timeline with absolute timestamps. Node
+labels each transcript by time; when a transcript arrives before its window is
+covered, the label is sent a few seconds later as a `speaker_update`.
+
+1. Accept the conditions on Hugging Face for **both**
+   [`pyannote/speaker-diarization-3.1`](https://huggingface.co/pyannote/speaker-diarization-3.1)
+   and [`pyannote/segmentation-3.0`](https://huggingface.co/pyannote/segmentation-3.0).
+2. Put your token in `.env` in this folder (alongside `GNANI_API_KEY`); the
+   sidecar reads `HF_TOKEN` from it. It never reads the repository root.
+3. Create a self-contained virtualenv for the sidecar:
+
+   ```powershell
+   cd Gnani-Hackathon
+   python -m venv .venv
+   .\.venv\Scripts\python.exe -m pip install -r requirements.txt
+   ```
+
+4. Start the sidecar in its own terminal:
+
+   ```powershell
+   cd Gnani-Hackathon
+   .\.venv\Scripts\python.exe diarizer_server.py
+   ```
+
+It listens on `ws://127.0.0.1:8790`. Options: `--num-speakers 2` (default),
+`--window 18`, `--hop 4`, or the `DIARIZER_*` variables in `.env`.
+
+A GPU is strongly recommended. On CPU an 18 s window may take longer than the
+4 s hop, so labels update more slowly — the sidecar never queues overlapping
+passes. Set `DIARIZATION_ENABLED=false` to run realtime without labels. If the
+sidecar is not running, realtime transcription still works; it simply shows no
+speaker badges.
+
 ---
 
 ## Feature tour
@@ -64,6 +112,7 @@ Open **http://localhost:8787** — Express serves the built frontend and hosts b
 
 - Click **Record Audio** → your mic streams to Gnani through the secure proxy.
 - Each finished utterance appears with a **language badge** (Prisma detects the language per utterance — Indian English, Hindi, Tamil, Telugu, Bengali, Marathi, Gujarati, Kannada, Malayalam, Punjabi, including code-switching).
+- With the pyannote sidecar running, each utterance also gets a green **Speaker N** badge. Labels can arrive a few seconds after the text (see [Realtime speaker labels](#realtime-speaker-labels-pyannote-sidecar)).
 - Live waveform, recording timer, speech/processing indicators, connection status.
 - **Stop** finalizes gracefully: trailing silence → `commit` → wait for the last transcript → close, so the final sentence is never lost.
 
@@ -361,7 +410,7 @@ Server logs include session ids, frame counts, upstream close codes, rate-limit 
 
 ## Scope & current limitations
 
-- Realtime diarization doesn't exist at Gnani — diarization is a Gnani Batch Jobs API feature only, so it is wired to the batch path (that's exactly what we did).
+- Gnani realtime has no speaker diarization (diarization is a Gnani Batch Jobs API feature). Realtime labels come from the local pyannote sidecar described above; batch labels come from Gnani.
 - Batch direct upload is capped at **10 MB**; files needing more require Gnani's presigned-upload flow (not implemented).
 - The legacy local-decode WebSocket batch path still exists (code + tests) but is not wired into the UI; the active batch path is the REST jobs flow above.
 - **History:** sessions are kept in the browser tab only; there is no account system or database, and a refresh clears recorded sessions.
