@@ -71,7 +71,7 @@ Browser ──PCM──► Node /ws/stt/realtime ──PCM──► Gnani (conne
 ```
 
 The sidecar re-diarizes the trailing window every few seconds and returns a
-stable `Speaker 1` / `Speaker 2` timeline with absolute timestamps. Node
+stable `Speaker 1` / `Speaker 2` / `Speaker N` timeline with absolute timestamps. Node
 labels each transcript by time; when a transcript arrives before its window is
 covered, the label is sent a few seconds later as a `speaker_update`.
 
@@ -95,7 +95,7 @@ covered, the label is sent a few seconds later as a `speaker_update`.
    .\.venv\Scripts\python.exe diarizer_server.py
    ```
 
-It listens on `ws://127.0.0.1:8790`. Options: `--num-speakers 2` (default),
+It listens on `ws://127.0.0.1:8790`. Options: `--num-speakers 0` (auto-detect, default; pass `2`, `3`, ... to force a count),
 `--window 18`, `--hop 4`, or the `DIARIZER_*` variables in `.env`.
 
 A GPU is strongly recommended. On CPU an 18 s window may take longer than the
@@ -139,7 +139,7 @@ speaker badges.
 - **Generate summary** produces a structured clinical note: chief complaint, symptoms, history, medications, assessment, plan, follow-up, and red flags. Missing details are marked “Not stated”.
 - Summaries and translations are generated server-side with Gemini, with model fallback and retry when the primary model is busy.
 - Both are produced by a **single Gemini request** per transcript: the Translate and Summary tabs stay separate in the UI, but opening either one reuses the same combined result instead of calling the model twice.
-- Clinical speaker labels turn `Speaker 1` / `Speaker 2` into **Doctor** / **Patient**.
+- Detected speakers are always numbered **Speaker 1**, **Speaker 2**, **Speaker 3**, and so on (never role names such as Doctor/Patient).
 - Summaries and translations are generated only from the session's own transcript.
 
 ### 5. Session history

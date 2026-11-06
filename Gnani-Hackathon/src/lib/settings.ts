@@ -5,7 +5,7 @@ const STORAGE_KEY = "voxnote.settings.v1";
 export const DEFAULT_SETTINGS: AppSettings = {
   targetLanguage: "en",
   autoTranslate: true,
-  clinicalLabels: true,
+  clinicalLabels: false,
 };
 
 export const TRANSLATION_LANGUAGES: Array<{

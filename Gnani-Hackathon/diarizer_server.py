@@ -84,6 +84,10 @@ MIN_START_SECONDS = 8.0
 # their speech overlaps a speaker already seen in the timeline.
 SAME_SPEAKER_OVERLAP = 0.2
 
+# Very short unrecognised bursts (coughs, noise, one-word interjections) reuse
+# the closest known speaker instead of creating a new Speaker N.
+MIN_NEW_SPEAKER_SECONDS = 1.0
+
 RUN_LOCK = asyncio.Lock()
 
 
@@ -236,6 +240,7 @@ class LiveSession:
 
         mapping: dict[str, int] = {}
         max_speakers = self.num_speakers or 0
+        recent_speaker = self._timeline[-1].speaker if self._timeline else None
 
         for label, label_segments in by_label.items():
             # Compare against the full timeline: the overlapping part of the
@@ -256,13 +261,17 @@ class LiveSession:
                 mapping[label] = best
                 continue
 
+            if speech < MIN_NEW_SPEAKER_SECONDS and (
+                best is not None or recent_speaker is not None
+            ):
+                mapping[label] = best if best is not None else recent_speaker
+                continue
+
             if max_speakers and self._next_speaker > max_speakers:
                 # Speaker budget exhausted (e.g. 2-person call): never invent
                 # "Speaker 3". Reuse the best match or the last active speaker.
                 mapping[label] = (
-                    best
-                    if best is not None
-                    else (self._timeline[-1].speaker if self._timeline else 1)
+                    best if best is not None else (recent_speaker or 1)
                 )
                 continue
 
@@ -317,8 +326,10 @@ async def handle_connection(connection, settings: argparse.Namespace) -> None:
     )
 
     wake = asyncio.Event()
+    failures = 0
 
     async def worker() -> None:
+        nonlocal failures
         while True:
             await wake.wait()
             wake.clear()
@@ -327,9 +338,15 @@ async def handle_connection(connection, settings: argparse.Namespace) -> None:
             try:
                 async with RUN_LOCK:
                     timeline = await asyncio.to_thread(session.run)
-            except Exception as exc:  # noqa: BLE001 - report and stop trying
-                session.fail()
-                log(f"{session_id}: diarization failed: {exc}")
+            except Exception as exc:  # noqa: BLE001 - report and retry next pass
+                # A single bad window (OOM, a pyannote hiccup) must not disable
+                # speaker labels for the rest of the session. Keep trying.
+                failures += 1
+                if failures == 1 or failures % 5 == 0:
+                    log(
+                        f"{session_id}: diarization failed "
+                        f"({failures}x), retrying: {exc}"
+                    )
                 try:
                     await connection.send(
                         json.dumps({"type": "error", "message": str(exc)})
@@ -340,6 +357,7 @@ async def handle_connection(connection, settings: argparse.Namespace) -> None:
 
             if timeline is None:
                 continue
+            failures = 0
             try:
                 await connection.send(
                     json.dumps({"type": "timeline", "turns": timeline})
@@ -414,8 +432,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--num-speakers",
         type=int,
-        default=_env_int("DIARIZER_NUM_SPEAKERS", 2),
-        help="0 = let pyannote decide (default: 2)",
+        default=_env_int("DIARIZER_NUM_SPEAKERS", 0),
+        help="0 = let pyannote decide (default: 0)",
     )
     parser.add_argument(
         "--window",

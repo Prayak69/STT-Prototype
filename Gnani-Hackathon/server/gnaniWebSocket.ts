@@ -12,12 +12,20 @@ const LEGACY_PATH = "/ws/stt";
 const PCM_FRAME_BYTES = 1024;
 /** One 1,024-byte frame is 512 samples at 16 kHz. */
 const PCM_FRAME_MS = 32;
+/**
+ * How far a transcript may sit from the nearest diarization turn before we
+ * stop using a nearby guess. Segments matched through a gap keep waiting for
+ * a later timeline so the provisional label can be corrected.
+ */
+const SPEAKER_MATCH_WINDOW_SECONDS = 8;
 
 interface PendingTranscript {
   segment_id?: string | number;
   segment_index?: number;
   start: number;
   end: number;
+  /** Last provisional label sent to the browser, to avoid duplicate updates. */
+  lastSpeaker?: number;
 }
 
 /**
@@ -187,28 +195,58 @@ export function attachSttProxy(server: HttpServer): { close: () => void } {
      * timeline (both start at 0 and advance one 32 ms frame at a time).
      */
     let audioClockMs = 0;
+    /** Stream time of the last Gnani `processing` event (end of speech). */
+    let lastSpeechEndMs: number | null = null;
+    /** Stable ids for transcripts that arrive without a Gnani `segment_id`. */
+    let syntheticSegmentId = 0;
     const pendingTranscripts = new Map<string, PendingTranscript>();
     let diarization: DiarizationSession | null = null;
+
+    /**
+     * Stable sidecar ids can skip numbers (1, 2, 4) when a cluster is dropped.
+     * Renumber them by first appearance so the UI is always Speaker 1, 2, 3...
+     */
+    const displaySpeakers = new Map<number, number>();
+    const displaySpeakerId = (stableId: number): number => {
+      const existing = displaySpeakers.get(stableId);
+      if (existing !== undefined) return existing;
+      const next = displaySpeakers.size;
+      displaySpeakers.set(stableId, next);
+      return next;
+    };
 
     const emitSpeakerUpdates = () => {
       if (!diarization || pendingTranscripts.size === 0) return;
 
       const updates: Array<Record<string, unknown>> = [];
-      const staleBefore = audioClockMs / 1000 - 120;
+      const staleBefore = audioClockMs / 1000 - 600;
       for (const [key, item] of pendingTranscripts) {
         if (item.end < staleBefore) {
           pendingTranscripts.delete(key);
           continue;
         }
-        const speakerId = diarization.speakerFor(item.start, item.end);
-        if (speakerId === null) continue;
+        const match = diarization.matchFor(
+          item.start,
+          item.end,
+          SPEAKER_MATCH_WINDOW_SECONDS,
+        );
+        if (match === null) continue;
+        const speakerId = displaySpeakerId(match.speaker);
+        if (match.exact) {
+          // A real turn now covers the segment: this is the final label.
+          pendingTranscripts.delete(key);
+        } else if (item.lastSpeaker === speakerId) {
+          // No better data yet; keep waiting without spamming the browser.
+          continue;
+        } else {
+          item.lastSpeaker = speakerId;
+        }
         updates.push({
           segment_id: item.segment_id,
           segment_index: item.segment_index,
           // The UI expects Gnani-style 0-based ids (`speaker_id + 1` is shown).
-          speaker_id: speakerId - 1,
+          speaker_id: speakerId,
         });
-        pendingTranscripts.delete(key);
       }
 
       if (updates.length === 0 || client.readyState !== WebSocket.OPEN) return;
@@ -239,40 +277,78 @@ export function attachSttProxy(server: HttpServer): { close: () => void } {
       } catch {
         return text;
       }
+
+      // Gnani signals end-of-speech just before transcription starts. Anchoring
+      // to this event is far more accurate than using the transcript arrival
+      // time, which includes Gnani's processing latency.
+      if (frame.type === "processing") {
+        // VAD reports end-of-speech after the configured silence window, so
+        // back off that silence to land on the real speech boundary.
+        lastSpeechEndMs = Math.max(
+          0,
+          audioClockMs - config.stt.minSilenceMs,
+        );
+        return text;
+      }
       if (frame.type !== "transcript") return text;
-      if (typeof frame.speaker_id === "number") return text;
+
+      // Guarantee a stable id so late `speaker_update` frames can always be
+      // matched in the browser, even if Gnani omits `segment_id`.
+      if (frame.segment_id === undefined || frame.segment_id === null) {
+        syntheticSegmentId += 1;
+        frame.segment_id = `rt-${syntheticSegmentId}`;
+      }
+
+      const latencyMs = Number(frame.latency);
+      const endMs =
+        lastSpeechEndMs ??
+        Math.max(
+          0,
+          audioClockMs -
+            config.stt.minSilenceMs -
+            (Number.isFinite(latencyMs) ? latencyMs : 0),
+        );
+      lastSpeechEndMs = null;
+
+      if (typeof frame.speaker_id === "number") return JSON.stringify(frame);
 
       const durationMs = Number(frame.audio_duration_ms);
-      const end = audioClockMs / 1000;
-      const speech = Number.isFinite(durationMs) && durationMs > 0 ? durationMs / 1000 : 1.5;
+      const end = endMs / 1000;
+      const speech =
+        Number.isFinite(durationMs) && durationMs > 0
+          ? Math.min(durationMs / 1000, 30)
+          : 1.5;
       const start = Math.max(0, end - speech);
-
-      const speakerId = diarization.speakerFor(start, end);
-      if (speakerId !== null) {
-        // Sidecar ids are 1-based; the UI (like Gnani Batch) uses 0-based ids.
-        frame.speaker_id = speakerId - 1;
-        return JSON.stringify(frame);
-      }
 
       const segmentId = frame.segment_id as string | number | undefined;
       const segmentIndex =
         typeof frame.segment_index === "number" ? frame.segment_index : undefined;
-      const key =
-        segmentId !== undefined
-          ? `id:${segmentId}`
-          : segmentIndex !== undefined
-            ? `index:${segmentIndex}`
-            : null;
 
-      if (key && pendingTranscripts.size < 1000) {
+      const key = `id:${segmentId}`;
+      const match = diarization.matchFor(
+        start,
+        end,
+        SPEAKER_MATCH_WINDOW_SECONDS,
+      );
+
+      const displayId = match ? displaySpeakerId(match.speaker) : null;
+      if (displayId !== null) {
+        // The UI (like Gnani Batch) expects 0-based ids (`speaker_id + 1`).
+        frame.speaker_id = displayId;
+      }
+
+      // Keep the segment pending unless a real turn covers it, so a later
+      // window can correct a provisional label (or fill in a missing one).
+      if ((match === null || !match.exact) && pendingTranscripts.size < 1000) {
         pendingTranscripts.set(key, {
           segment_id: segmentId,
           segment_index: segmentIndex,
           start,
           end,
+          lastSpeaker: displayId ?? undefined,
         });
       }
-      return text;
+      return JSON.stringify(frame);
     };
 
     // Batch-only flow control. Realtime sockets keep their original behaviour.

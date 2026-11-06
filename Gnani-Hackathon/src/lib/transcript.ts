@@ -41,14 +41,9 @@ function toneForSpeaker(speaker: string): SpeakerTone {
 
 export function speakerLabel(
   segment: TranscriptSegment,
-  options: SpeakerOptions,
+  _options: SpeakerOptions,
 ): string {
-  if (segment.speakerName?.trim()) return segment.speakerName.trim();
   if (segment.speakerId !== undefined && segment.speakerId !== null) {
-    if (options.clinicalLabels) {
-      if (segment.speakerId === 0) return "Doctor";
-      if (segment.speakerId === 1) return "Patient";
-    }
     return `Speaker ${segment.speakerId + 1}`;
   }
   return "Speaker";

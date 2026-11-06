@@ -17,11 +17,25 @@ export interface SpeakerTurn {
   speaker: number;
 }
 
+export interface SpeakerMatch {
+  speaker: number;
+  /** True when a turn actually covers/overlaps the segment, not just nearby. */
+  exact: boolean;
+}
+
 export interface DiarizationSession {
   /** Queue a 1,024-byte, 16 kHz mono PCM frame. */
   pushFrame(frame: Buffer): void;
-  /** Stable speaker id covering [start, end] seconds, or null if unknown yet. */
-  speakerFor(start: number, end: number): number | null;
+  /**
+   * Best speaker match for [start, end] seconds.
+   * When `maxDistanceSeconds` is set, a nearby turn is only used if it is
+   * within that many seconds of the segment. `exact` is false for gaps.
+   */
+  matchFor(
+    start: number,
+    end: number,
+    maxDistanceSeconds?: number,
+  ): SpeakerMatch | null;
   close(): void;
 }
 
@@ -34,7 +48,6 @@ interface TimelineMessage {
 const RECONNECT_DELAY_MS = 2000;
 /** ~32 s of audio; enough to ride out a sidecar restart at session start. */
 const MAX_QUEUED_FRAMES = 1000;
-const NEAREST_TURN_SECONDS = 2;
 /** One 1,024-byte frame is 512 samples at 16 kHz. */
 const FRAME_MS = 32;
 
@@ -48,16 +61,19 @@ function isTurn(value: unknown): value is SpeakerTurn {
   );
 }
 
-function pickSpeaker(
+function matchSpeaker(
   turns: SpeakerTurn[],
   start: number,
   end: number,
-): number | null {
+  maxDistanceSeconds: number,
+): SpeakerMatch | null {
   if (turns.length === 0) return null;
 
   const midpoint = (start + end) / 2;
   for (const turn of turns) {
-    if (midpoint >= turn.start && midpoint <= turn.end) return turn.speaker;
+    if (midpoint >= turn.start && midpoint <= turn.end) {
+      return { speaker: turn.speaker, exact: true };
+    }
   }
 
   // No turn covers the midpoint: use whichever turn overlaps the interval most.
@@ -70,11 +86,14 @@ function pickSpeaker(
       best = turn;
     }
   }
-  if (best) return best.speaker;
+  if (best) return { speaker: best.speaker, exact: true };
 
-  // Finally accept a turn that is very close (diarization lags behind Gnani).
+  // Diarization can lag behind Gnani and leave small gaps in the timeline.
+  // Return the closest known turn so a transcript is never left unlabelled
+  // (the UI would otherwise show a bare "Speaker"). Callers keep the segment
+  // pending because the label may be corrected by the next window.
   let nearest: number | null = null;
-  let nearestDistance = NEAREST_TURN_SECONDS;
+  let nearestDistance = Number.POSITIVE_INFINITY;
   for (const turn of turns) {
     const distance =
       midpoint < turn.start
@@ -87,7 +106,10 @@ function pickSpeaker(
       nearest = turn.speaker;
     }
   }
-  return nearest;
+  if (nearest !== null && nearestDistance <= maxDistanceSeconds) {
+    return { speaker: nearest, exact: false };
+  }
+  return null;
 }
 
 export function createDiarizationSession(options: {
@@ -215,8 +237,8 @@ export function createDiarizationSession(options: {
       queue.push({ frame: Buffer.from(frame), clockMs });
     },
 
-    speakerFor(start: number, end: number) {
-      return pickSpeaker(turns, start, end);
+    matchFor(start: number, end: number, maxDistanceSeconds = Number.POSITIVE_INFINITY) {
+      return matchSpeaker(turns, start, end, maxDistanceSeconds);
     },
 
     close() {

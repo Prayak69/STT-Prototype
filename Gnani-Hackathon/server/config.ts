@@ -41,8 +41,8 @@ export const config = {
   diarization: {
     enabled: (process.env.DIARIZATION_ENABLED ?? "true").toLowerCase() !== "false",
     url: process.env.DIARIZER_URL ?? "ws://127.0.0.1:8790",
-    /** Fixed speaker count for the recording (2 for a clinician/patient call). */
-    numSpeakers: intFromEnv("DIARIZER_NUM_SPEAKERS", 2),
+    /** 0 = let pyannote detect the speaker count automatically. */
+    numSpeakers: intFromEnv("DIARIZER_NUM_SPEAKERS", 0),
   },
 
   limits: {
