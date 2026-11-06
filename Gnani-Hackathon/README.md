@@ -58,7 +58,7 @@ touching the batch path (Gnani Batch already diarizes).
 ```
 Browser ──PCM──► Node /ws/stt/realtime ──PCM──► Gnani (connected/transcript)
                             │
-                            └── same PCM ──► diarizer_server.py (pyannote 3.1)
+                            └── same PCM ──► python/diarizer_server.py (pyannote 3.1)
                                                   └── speaker timeline
 ```
 
@@ -77,14 +77,14 @@ covered, the label is sent a few seconds later as a `speaker_update`.
    ```powershell
    cd Gnani-Hackathon
    python -m venv .venv
-   .\.venv\Scripts\python.exe -m pip install -r requirements.txt
+   .\.venv\Scripts\python.exe -m pip install -r python\requirements.txt
    ```
 
 4. Start the sidecar in its own terminal:
 
    ```powershell
    cd Gnani-Hackathon
-   .\.venv\Scripts\python.exe diarizer_server.py
+   .\.venv\Scripts\python.exe python\diarizer_server.py
    ```
 
 It listens on `ws://127.0.0.1:8790`. Options: `--num-speakers 2` (default),
@@ -198,38 +198,49 @@ x-max-speech-s:     30    ← forces a transcript mid-monologue so results keep 
 
 ```
 .
-├── server/
+├── frontend/                  # React + Vite app
+│   ├── index.html
+│   ├── public/
+│   │   ├── pcm-processor.js       # AudioWorklet: mono 16 kHz s16le, 512-sample frames
+│   │   └── favicon.svg
+│   ├── src/
+│   │   ├── App.tsx                # One app state: realtime or batch (disjoint), wiring
+│   │   ├── components/
+│   │   │   ├── BatchPanel.tsx     # Two-step upload→Generate, stage pills, progress, cancel/retry
+│   │   │   ├── LiveTranscription.tsx  # Shared transcript panel; Speaker N badges + segment times
+│   │   │   ├── StartActions.tsx   # Record / Upload entry cards
+│   │   │   ├── RecordingPanel.tsx, AudioVisualizer.tsx, Header.tsx,
+│   │   │   ├── StatusBadge.tsx, ErrorBanner.tsx
+│   │   ├── hooks/
+│   │   │   ├── useAudioStreaming.ts    # Realtime: capture → WS → segments (state machine)
+│   │   │   ├── useBatchDiarization.ts  # Batch: select → generate → upload → poll → download
+│   │   │   └── useBatchProcessing.ts   # Legacy local-decode WS batch (unused by UI, kept for tests)
+│   │   ├── lib/
+│   │   │   ├── pcm.ts                 # Resampler, frame emitter, WS URL builder
+│   │   │   ├── batch.ts               # File validation, decode, downmix, resample (legacy path)
+│   │   │   └── languages.ts, format.ts, errors.ts
+│   │   ├── main.tsx
+│   │   └── index.css
+│   ├── tsconfig.json
+│   └── vite.config.ts
+├── backend/                   # Node/Express + WebSocket proxy
 │   ├── server.ts              # Express app: static hosting, /api/health, batch diarization routes
 │   ├── gnaniWebSocket.ts      # Realtime WS proxy (+ legacy /ws/stt/batch streaming path)
 │   ├── gnaniBatch.ts          # Gnani Batch Jobs REST client: create/start/poll/files/download/cancel,
 │   │                          #   magic-byte extension sniffing, 429 retry wrapper
+│   ├── diarization.ts         # Client for the local pyannote sidecar
 │   ├── config.ts              # .env loading, Gnani session constants
-│   └── logger.ts              # Structured JSON-ish console logger
-├── src/
-│   ├── App.tsx                # One app state: realtime or batch (disjoint), wiring
-│   ├── components/
-│   │   ├── BatchPanel.tsx     # Two-step upload→Generate, stage pills, progress, cancel/retry
-│   │   ├── LiveTranscription.tsx  # Shared transcript panel; Speaker N badges + segment times
-│   │   ├── StartActions.tsx   # Record / Upload entry cards
-│   │   ├── RecordingPanel.tsx, AudioVisualizer.tsx, Header.tsx,
-│   │   ├── StatusBadge.tsx, ErrorBanner.tsx
-│   ├── hooks/
-│   │   ├── useAudioStreaming.ts    # Realtime: capture → WS → segments (state machine)
-│   │   ├── useBatchDiarization.ts  # Batch: select → generate → upload → poll → download
-│   │   └── useBatchProcessing.ts   # Legacy local-decode WS batch (unused by UI, kept for tests)
-│   ├── lib/
-│   │   ├── pcm.ts                 # Resampler, frame emitter, WS URL builder
-│   │   ├── batch.ts               # File validation, decode, downmix, resample (legacy path)
-│   │   └── languages.ts, format.ts, errors.ts
-│   ├── public/
-│   │   ├── pcm-processor.js       # AudioWorklet: mono 16 kHz s16le, 512-sample frames
-│   │   └── favicon.svg
-│   ├── scripts/
-│   │   ├── build.mjs              # Cross-platform typecheck + build
-│   │   └── test-batch-audio.ts, test-batch-proxy.ts   # Offline tests (no Gnani calls)
-│   ├── main.tsx
-│   └── index.css
-├── .env                        # GNANI_API_KEY (git-ignored)
+│   ├── logger.ts              # Structured JSON-ish console logger
+│   └── tsconfig.server.json
+├── python/                    # Local pyannote diarization sidecar
+│   ├── diarizer_server.py     # WebSocket sidecar: rolling window → speaker timeline
+│   ├── diarization.py         # pyannote pipeline wrapper
+│   └── requirements.txt
+├── scripts/
+│   ├── build.mjs              # Cross-platform typecheck + build
+│   └── test-batch-audio.ts, test-batch-proxy.ts   # Offline tests (no Gnani calls)
+├── package.json               # Single npm project for frontend + backend
+├── .env                       # GNANI_API_KEY, HF_TOKEN (git-ignored)
 └── .env.example
 ```
 

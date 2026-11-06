@@ -12,7 +12,8 @@ from typing import Optional
 import numpy as np
 from dotenv import load_dotenv
 
-load_dotenv(Path(__file__).resolve().parent / ".env")
+# The shared .env lives at the project root (one level above python/).
+load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
 # Most accurate general-purpose pyannote diarization model.
 # If you still get over-splitting (e.g. 2 speakers heard as 4), try
@@ -83,7 +84,7 @@ class SpeakerDiarizer:
 
         if not pyannote_installed():
             raise DiarizationUnavailable(
-                "pyannote.audio is not installed. Run: pip install -r requirements.txt"
+                "pyannote.audio is not installed. Run: pip install -r python\\requirements.txt"
             )
         if not self.token:
             raise DiarizationUnavailable(

@@ -20,10 +20,10 @@ function run(label, args) {
 
 const tsc = binPath("tsc", path.join("typescript", "bin", "tsc"));
 
-run("Typechecking the frontend", [tsc, "-p", "tsconfig.json", "--noEmit"]);
-run("Typechecking the server", [tsc, "-p", "tsconfig.server.json", "--noEmit"]);
+run("Typechecking the frontend", [tsc, "-p", "frontend/tsconfig.json", "--noEmit"]);
+run("Typechecking the backend", [tsc, "-p", "backend/tsconfig.server.json", "--noEmit"]);
 
 if (process.argv.includes("--build")) {
   const vite = binPath("vite", path.join("vite", "bin", "vite.js"));
-  run("Building the frontend", [vite, "build"]);
+  run("Building the frontend", [vite, "build", "--config", "frontend/vite.config.ts"]);
 }

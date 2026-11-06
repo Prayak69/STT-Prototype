@@ -36,7 +36,7 @@ export const config = {
   /**
    * Local pyannote sidecar used only by the realtime microphone path.
    * Gnani Batch already returns `speaker_id` and is not affected by this.
-   * See `diarizer_server.py` in this folder.
+   * See `python/diarizer_server.py`.
    */
   diarization: {
     enabled: (process.env.DIARIZATION_ENABLED ?? "true").toLowerCase() !== "false",

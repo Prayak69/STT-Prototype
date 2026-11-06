@@ -5,7 +5,7 @@ import {
   MAX_BATCH_DURATION_MS,
   prepareBatchAudio,
   validateBatchFile,
-} from "../src/lib/batch.ts";
+} from "../frontend/src/lib/batch.ts";
 
 interface FakeBuffer {
   sampleRate: number;

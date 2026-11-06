@@ -3,8 +3,8 @@ import { config } from "./config";
 import { logger } from "./logger";
 
 /**
- * Client for the local pyannote sidecar (see `diarizer_server.py` at the repo
- * root). One instance exists per realtime browser session. The proxy forwards
+ * Client for the local pyannote sidecar (see `python/diarizer_server.py`).
+ * One instance exists per realtime browser session. The proxy forwards
  * the exact same PCM frames it sends to Gnani, and the sidecar answers with a
  * rolling speaker timeline in seconds since the start of the stream.
  *
