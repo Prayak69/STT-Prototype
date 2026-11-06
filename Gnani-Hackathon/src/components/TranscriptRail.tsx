@@ -31,6 +31,8 @@ interface TranscriptRailProps {
   isProcessing: boolean;
   isRecording: boolean;
   sessionComplete: boolean;
+  /** False while the batch diarization is still running — AI must wait for it. */
+  aiReady: boolean;
   settings: AppSettings;
   onSettingsChange: (patch: Partial<AppSettings>) => void;
   onClear: () => void;
@@ -69,6 +71,7 @@ export function TranscriptRail({
   isProcessing,
   isRecording,
   sessionComplete,
+  aiReady,
   settings,
   onSettingsChange,
   onClear,
@@ -92,12 +95,14 @@ export function TranscriptRail({
   // session finishes. Manual re-translation stays available at any time.
   useEffect(() => {
     if (!settings.autoTranslate || !sessionComplete) return;
+    if (!aiReady) return;
     if (mode === "saved") return;
     if (segments.length === 0) return;
     if (autoRanRef.current === sourceKey) return;
     autoRanRef.current = sourceKey;
     void insights.translate(settings.targetLanguage);
   }, [
+    aiReady,
     insights,
     mode,
     segments.length,

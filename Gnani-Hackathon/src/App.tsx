@@ -369,6 +369,7 @@ export default function App() {
           ? diarize.state === "complete"
           : audio.state === "stopped" && !liveDiarizePending)
       }
+      aiReady={!batchBusy}
       settings={settings}
       onSettingsChange={updateSettings}
       onClear={clearCurrentTranscript}

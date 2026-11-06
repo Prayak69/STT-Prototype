@@ -108,6 +108,10 @@ const INSIGHTS_SCHEMA = {
   required: ["summary", "translation"],
 } as const;
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 export function geminiStatus(): { configured: boolean; provider: string; model: string } {
   return {
     configured: Boolean(config.ai.apiKey),
@@ -248,21 +252,33 @@ async function callGemini(
   const models = Array.from(new Set([config.ai.model, ...config.ai.fallbackModels]));
   let lastError: GeminiError | null = null;
 
-  for (const [index, model] of models.entries()) {
-    try {
-      return await requestModel(model, prompt, schema, maxOutputTokens);
-    } catch (error) {
-      if (!(error instanceof GeminiError)) throw error;
-      lastError = error;
-
-      const hasFallback = index < models.length - 1;
-      if (!error.retryable || !hasFallback) throw error;
-
-      logger.warn("Gemini model unavailable, trying a fallback", {
-        model,
-        status: error.status,
-        error: error.message,
+  // Two passes: when every model answers "high demand" (429/503), wait once
+  // and try the whole list again before giving up.
+  for (let pass = 0; pass < 2; pass += 1) {
+    if (pass > 0) {
+      logger.info("Gemini busy on all models; retrying combined request", {
+        waitMs: 10_000,
+        error: lastError?.message,
       });
+      await sleep(10_000);
+    }
+
+    for (const [index, model] of models.entries()) {
+      try {
+        return await requestModel(model, prompt, schema, maxOutputTokens);
+      } catch (error) {
+        if (!(error instanceof GeminiError)) throw error;
+        lastError = error;
+
+        const hasFallback = index < models.length - 1;
+        if (!error.retryable || !hasFallback) throw error;
+
+        logger.warn("Gemini model unavailable, trying a fallback", {
+          model,
+          status: error.status,
+          error: error.message,
+        });
+      }
     }
   }
 
