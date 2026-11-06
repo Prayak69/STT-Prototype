@@ -75,6 +75,13 @@ stable `Speaker 1` / `Speaker 2` / `Speaker N` timeline with absolute timestamps
 labels each transcript by time; when a transcript arrives before its window is
 covered, the label is sent a few seconds later as a `speaker_update`.
 
+When recording stops, the proxy waits for the last transcript and then asks the
+sidecar for one **final, wider pass** (up to 90 s of audio). That labels the tail
+of the consultation — the part the rolling 18 s window had not covered yet — and
+sends a closing `speaker_update` with `final: true` before the browser saves the
+session. Without that pass, a final utterance could be stored with a bare
+`Speaker` label.
+
 1. Accept the conditions on Hugging Face for **both**
    [`pyannote/speaker-diarization-3.1`](https://huggingface.co/pyannote/speaker-diarization-3.1)
    and [`pyannote/segmentation-3.0`](https://huggingface.co/pyannote/segmentation-3.0).
@@ -100,9 +107,10 @@ It listens on `ws://127.0.0.1:8790`. Options: `--num-speakers 0` (auto-detect, d
 
 A GPU is strongly recommended. On CPU an 18 s window may take longer than the
 4 s hop, so labels update more slowly — the sidecar never queues overlapping
-passes. Set `DIARIZATION_ENABLED=false` to run realtime without labels. If the
-sidecar is not running, realtime transcription still works; it simply shows no
-speaker badges.
+passes. The final pass at stop can also take a few seconds on CPU; the UI waits
+for it (with a timeout) before saving the session. Set `DIARIZATION_ENABLED=false`
+to run realtime without labels. If the sidecar is not running, realtime
+transcription still works; it simply shows no speaker badges.
 
 ---
 

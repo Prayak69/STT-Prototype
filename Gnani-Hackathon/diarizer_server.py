@@ -15,10 +15,14 @@ Node proxy -> sidecar:
   The frames must be the same frames sent to Gnani, in order.
   {"type":"sync","audio_ms":0} on (re)connect: absolute time of the first
   frame that follows, used to keep timestamps aligned after a reconnect.
+  {"type":"flush"} when the stream ends: run one last pass over the buffered
+  audio (up to FINAL_WINDOW_SECONDS) so the tail of the conversation is
+  labelled before the session closes.
 
 Sidecar -> Node proxy (JSON):
   {"type":"ready","sample_rate":16000,"num_speakers":2}
   {"type":"timeline","turns":[{"start":0.0,"end":1.4,"speaker":1}, ...]}
+  {"type":"timeline","turns":[...],"final":true}   # answer to "flush"
   {"type":"error","message":"..."}
 
 `speaker` is a stable integer id per connection (1, 2, ...), so the caller can
@@ -79,6 +83,10 @@ MAX_AUDIO_SECONDS = 25 * 60
 
 # A window needs at least this much audio before the first run.
 MIN_START_SECONDS = 8.0
+
+# The final pass (on "flush") re-diarizes the whole buffered session, capped so
+# a long consultation cannot stall the shutdown for minutes on CPU.
+FINAL_WINDOW_SECONDS = 90.0
 
 # Two local labels are treated as the same speaker when at least this share of
 # their speech overlaps a speaker already seen in the timeline.
@@ -158,7 +166,7 @@ class LiveSession:
 
     # -- diarization -----------------------------------------------------
 
-    def run(self) -> Optional[list[dict]]:
+    def run(self, window_seconds: Optional[float] = None) -> Optional[list[dict]]:
         if self._failed:
             return None
 
@@ -166,7 +174,13 @@ class LiveSession:
         if duration <= 0:
             return None
 
-        window_start = max(0.0, duration - self.window_sec)
+        window = self.window_sec
+        if window_seconds is not None and window_seconds > 0:
+            # The final pass looks further back so the tail of the session is
+            # labelled with the full speaker context.
+            window = max(window, min(window_seconds, duration))
+
+        window_start = max(0.0, duration - window)
         start_byte = int(window_start * BYTES_PER_SECOND)
         start_byte -= start_byte % BYTES_PER_SAMPLE
         window_start = start_byte / BYTES_PER_SECOND
@@ -327,6 +341,7 @@ async def handle_connection(connection, settings: argparse.Namespace) -> None:
 
     wake = asyncio.Event()
     failures = 0
+    flush_tasks: set[asyncio.Task] = set()
 
     async def worker() -> None:
         nonlocal failures
@@ -370,6 +385,25 @@ async def handle_connection(connection, settings: argparse.Namespace) -> None:
             )
 
     task = asyncio.create_task(worker())
+
+    async def final_pass() -> None:
+        """One last, wider diarization pass; always answers with `final: true`."""
+        try:
+            async with RUN_LOCK:
+                timeline = await asyncio.to_thread(session.run, FINAL_WINDOW_SECONDS)
+        except Exception as exc:  # noqa: BLE001 - keep whatever we already have
+            log(f"{session_id}: final pass failed, using current timeline: {exc}")
+            timeline = session.snapshot()
+        if timeline is None:
+            timeline = session.snapshot()
+        try:
+            await connection.send(
+                json.dumps({"type": "timeline", "turns": timeline, "final": True})
+            )
+        except ConnectionClosed:
+            return
+        log(f"{session_id}: final timeline turns={len(timeline)}")
+
     try:
         async for message in connection:
             if isinstance(message, str):
@@ -377,8 +411,16 @@ async def handle_connection(connection, settings: argparse.Namespace) -> None:
                     control = json.loads(message)
                 except ValueError:
                     continue
-                if isinstance(control, dict) and control.get("type") == "sync":
+                if not isinstance(control, dict):
+                    continue
+                if control.get("type") == "sync":
                     session.set_offset(control.get("audio_ms"))
+                elif control.get("type") == "flush":
+                    # Run the final pass in the background so the socket keeps
+                    # draining messages while pyannote works.
+                    flush_task = asyncio.create_task(final_pass())
+                    flush_tasks.add(flush_task)
+                    flush_task.add_done_callback(flush_tasks.discard)
                 continue
             session.append(bytes(message))
             if session.wants_run():
@@ -387,6 +429,8 @@ async def handle_connection(connection, settings: argparse.Namespace) -> None:
         pass
     finally:
         task.cancel()
+        for flush_task in list(flush_tasks):
+            flush_task.cancel()
         log(f"{session_id}: closed after {round(session.duration, 1)}s")
 
 

@@ -215,24 +215,44 @@ export function attachSttProxy(server: HttpServer): { close: () => void } {
       return next;
     };
 
-    const emitSpeakerUpdates = () => {
-      if (!diarization || pendingTranscripts.size === 0) return;
+    /**
+     * Push speaker labels for transcripts that are still waiting for a window
+     * that covers them. `final` additionally releases every pending segment and
+     * sends a closing marker so the browser knows the labels will not change
+     * again.
+     */
+    const emitSpeakerUpdates = (options: { final?: boolean } = {}) => {
+      const final = options.final === true;
+
+      if (!diarization || pendingTranscripts.size === 0) {
+        if (final) sendJson(client, { type: "speaker_update", updates: [], final: true });
+        return;
+      }
 
       const updates: Array<Record<string, unknown>> = [];
       const staleBefore = audioClockMs / 1000 - 600;
       for (const [key, item] of pendingTranscripts) {
-        if (item.end < staleBefore) {
+        if (!final && item.end < staleBefore) {
           pendingTranscripts.delete(key);
           continue;
         }
+        // On the final pass fall back to the nearest turn at any distance, so a
+        // segment is never left with a bare "Speaker" label when the sidecar
+        // knows at least one speaker.
         const match = diarization.matchFor(
           item.start,
           item.end,
-          SPEAKER_MATCH_WINDOW_SECONDS,
+          final ? Number.POSITIVE_INFINITY : SPEAKER_MATCH_WINDOW_SECONDS,
         );
-        if (match === null) continue;
+        if (match === null) {
+          if (final) pendingTranscripts.delete(key);
+          continue;
+        }
         const speakerId = displaySpeakerId(match.speaker);
-        if (match.exact) {
+        if (final) {
+          pendingTranscripts.delete(key);
+          if (item.lastSpeaker === speakerId) continue;
+        } else if (match.exact) {
           // A real turn now covers the segment: this is the final label.
           pendingTranscripts.delete(key);
         } else if (item.lastSpeaker === speakerId) {
@@ -249,10 +269,55 @@ export function attachSttProxy(server: HttpServer): { close: () => void } {
         });
       }
 
-      if (updates.length === 0 || client.readyState !== WebSocket.OPEN) return;
+      if (updates.length === 0 && !final) return;
+      if (client.readyState !== WebSocket.OPEN) return;
 
-      sendJson(client, { type: "speaker_update", updates });
-      log("speaker labels updated", { count: updates.length });
+      sendJson(
+        client,
+        final
+          ? { type: "speaker_update", updates, final: true }
+          : { type: "speaker_update", updates },
+      );
+      if (updates.length > 0) {
+        log("speaker labels updated", { count: updates.length, final });
+      }
+    };
+
+    /**
+     * After the client commits, give Gnani time to deliver the last transcript
+     * and then ask the sidecar for one wider pass. Debounced, so several final
+     * segments are all captured before the final timeline is requested.
+     */
+    const FINAL_FLUSH_DELAY_MS = 900;
+    const FINAL_FLUSH_TIMEOUT_MS = 6000;
+    let finalFlushTimer: ReturnType<typeof setTimeout> | null = null;
+    let finalFlushStarted = false;
+
+    const runFinalSpeakerPass = async () => {
+      if (finalFlushStarted) return;
+      finalFlushStarted = true;
+
+      if (!diarization) {
+        emitSpeakerUpdates({ final: true });
+        return;
+      }
+
+      const ok = await diarization.flush(FINAL_FLUSH_TIMEOUT_MS);
+      if (ok) {
+        log("final diarization timeline received");
+      } else {
+        log("final diarization pass unavailable; using current timeline");
+      }
+      // Always release the browser, even when the sidecar timed out.
+      emitSpeakerUpdates({ final: true });
+    };
+
+    const scheduleFinalSpeakerPass = () => {
+      if (finalFlushTimer !== null) clearTimeout(finalFlushTimer);
+      finalFlushTimer = setTimeout(() => {
+        finalFlushTimer = null;
+        void runFinalSpeakerPass();
+      }, FINAL_FLUSH_DELAY_MS);
     };
 
     if (!isBatch && config.diarization.enabled) {
@@ -291,6 +356,10 @@ export function attachSttProxy(server: HttpServer): { close: () => void } {
         return text;
       }
       if (frame.type !== "transcript") return text;
+
+      // The session is winding down: keep pushing the final pass back until the
+      // last transcript has arrived, so its audio is part of the wider pass.
+      if (finalFlushTimer !== null) scheduleFinalSpeakerPass();
 
       // Guarantee a stable id so late `speaker_update` frames can always be
       // matched in the browser, even if Gnani omits `segment_id`.
@@ -462,6 +531,10 @@ export function attachSttProxy(server: HttpServer): { close: () => void } {
 
     upstream.on("close", (code, reason) => {
       stopBatchPump();
+      if (finalFlushTimer !== null) {
+        clearTimeout(finalFlushTimer);
+        finalFlushTimer = null;
+      }
       diarization?.close();
       const reasonText = reason.toString().slice(0, 200);
       log("upstream closed", {
@@ -551,6 +624,9 @@ export function attachSttProxy(server: HttpServer): { close: () => void } {
 
       const type = (message as { type?: unknown }).type;
       if (type === "commit") {
+        // Realtime stop: schedule the final, wider diarization pass. It runs
+        // after the last transcript so the tail of the session gets labelled.
+        if (!isBatch) scheduleFinalSpeakerPass();
         if (upstream.readyState === WebSocket.OPEN) {
           if (isBatch) {
             // Preserve ordering: the commit is sent after every queued frame.
@@ -567,6 +643,10 @@ export function attachSttProxy(server: HttpServer): { close: () => void } {
     client.on("close", (code, reason) => {
       clientClosed = true;
       stopBatchPump();
+      if (finalFlushTimer !== null) {
+        clearTimeout(finalFlushTimer);
+        finalFlushTimer = null;
+      }
       diarization?.close();
       const durationMs = Date.now() - startedAt;
       log("browser closed", {

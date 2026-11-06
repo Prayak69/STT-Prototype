@@ -63,6 +63,8 @@ interface ServerFrame {
   speaker_id?: number;
   /** Late labels for transcripts that arrived before diarization caught up. */
   updates?: SpeakerUpdate[];
+  /** Set on the last `speaker_update`, once no more labels will arrive. */
+  final?: boolean;
 }
 
 interface StopWaiter {
@@ -71,8 +73,15 @@ interface StopWaiter {
   hardTimer: number | null;
 }
 
+interface SpeakerWaiter {
+  resolve: () => void;
+  timer: number | null;
+}
+
 const SILENCE_FRAMES_BEFORE_COMMIT = 16; // ~512 ms of trailing silence
 const FINAL_TRANSCRIPT_TIMEOUT_MS = 4500;
+/** The server asks the diarizer for one last pass before closing. */
+const FINAL_SPEAKER_TIMEOUT_MS = 9000;
 const FINAL_SETTLE_MS = 600;
 const COMMIT_FALLBACK_MS = 1600;
 const CONNECT_TIMEOUT_MS = 12000;
@@ -131,6 +140,7 @@ export function useAudioStreaming() {
   const durationTimerRef = useRef<number | null>(null);
   const connectTimerRef = useRef<number | null>(null);
   const stopWaiterRef = useRef<StopWaiter | null>(null);
+  const speakerWaiterRef = useRef<SpeakerWaiter | null>(null);
   const requestIdRef = useRef<string | null>(null);
   const seenSegmentKeysRef = useRef<Set<string>>(new Set());
 
@@ -186,6 +196,28 @@ export function useAudioStreaming() {
     [resolveStopWaiter],
   );
 
+  const resolveSpeakerWaiter = useCallback(() => {
+    const waiter = speakerWaiterRef.current;
+    if (!waiter) return;
+    speakerWaiterRef.current = null;
+    if (waiter.timer !== null) window.clearTimeout(waiter.timer);
+    waiter.resolve();
+  }, []);
+
+  /** Resolves when the server's final `speaker_update` arrives, or on timeout. */
+  const waitForFinalSpeakerLabels = useCallback(
+    (timeoutMs: number) =>
+      new Promise<void>((resolve) => {
+        const waiter: SpeakerWaiter = { resolve, timer: null };
+        waiter.timer = window.setTimeout(
+          () => resolveSpeakerWaiter(),
+          timeoutMs,
+        );
+        speakerWaiterRef.current = waiter;
+      }),
+    [resolveSpeakerWaiter],
+  );
+
   const scheduleFinalSettle = useCallback(
     (delayMs: number) => {
       const waiter = stopWaiterRef.current;
@@ -239,6 +271,7 @@ export function useAudioStreaming() {
   const finishStop = useCallback(() => {
     stopDurationTimer(true);
     resolveStopWaiter();
+    resolveSpeakerWaiter();
     disposeAudio();
     commitSentRef.current = false;
 
@@ -257,13 +290,14 @@ export function useAudioStreaming() {
     setIsProcessing(false);
     setSpeechActive(false);
     updatePhase("stopped");
-  }, [disposeAudio, resolveStopWaiter, stopDurationTimer, updatePhase]);
+  }, [disposeAudio, resolveSpeakerWaiter, resolveStopWaiter, stopDurationTimer, updatePhase]);
 
   const fail = useCallback(
     (message: string) => {
       closingRef.current = true;
       clearConnectTimer();
       resolveStopWaiter();
+      resolveSpeakerWaiter();
       stopDurationTimer(true);
       disposeAudio();
       commitSentRef.current = false;
@@ -284,7 +318,7 @@ export function useAudioStreaming() {
       setSpeechActive(false);
       updatePhase("error");
     },
-    [clearConnectTimer, disposeAudio, resolveStopWaiter, stopDurationTimer, updatePhase],
+    [clearConnectTimer, disposeAudio, resolveSpeakerWaiter, resolveStopWaiter, stopDurationTimer, updatePhase],
   );
 
   const appendTranscript = useCallback((frame: ServerFrame) => {
@@ -402,6 +436,7 @@ export function useAudioStreaming() {
 
         case "speaker_update": {
           applySpeakerUpdates(frame.updates ?? []);
+          if (frame.final) resolveSpeakerWaiter();
           break;
         }
 
@@ -426,7 +461,7 @@ export function useAudioStreaming() {
           break;
       }
     },
-    [appendTranscript, applySpeakerUpdates, clearConnectTimer, fail, scheduleFinalSettle, startDurationTimer, updatePhase],
+    [appendTranscript, applySpeakerUpdates, clearConnectTimer, fail, resolveSpeakerWaiter, scheduleFinalSettle, startDurationTimer, updatePhase],
   );
 
   const setupAudio = useCallback(
@@ -698,6 +733,10 @@ export function useAudioStreaming() {
     // Register the waiter before flushing so a segment that VAD closes during
     // the trailing silence still counts as the final transcript.
     const finalTranscript = waitForFinalTranscript(FINAL_TRANSCRIPT_TIMEOUT_MS);
+    // After the final transcript the server asks the diarizer for one wider
+    // pass and closes the labels with a `final` marker. Wait for it so the tail
+    // of the consultation is not saved with a bare "Speaker" label.
+    const finalSpeakers = waitForFinalSpeakerLabels(FINAL_SPEAKER_TIMEOUT_MS);
 
     // Let the tail of the last word reach the VAD, then force the utterance
     // closed with a commit and wait for its transcript before disconnecting.
@@ -721,6 +760,7 @@ export function useAudioStreaming() {
     }
 
     await finalTranscript;
+    await finalSpeakers;
     finishStop();
   }, [
     disposeAudio,
@@ -729,6 +769,7 @@ export function useAudioStreaming() {
     scheduleFinalSettle,
     stopDurationTimer,
     updatePhase,
+    waitForFinalSpeakerLabels,
     waitForFinalTranscript,
   ]);
 
@@ -770,6 +811,8 @@ export function useAudioStreaming() {
         waiter.resolve();
       }
 
+      resolveSpeakerWaiter();
+
       disposeAudio();
 
       const ws = wsRef.current;
@@ -782,7 +825,7 @@ export function useAudioStreaming() {
         }
       }
     };
-  }, [disposeAudio]);
+  }, [disposeAudio, resolveSpeakerWaiter]);
 
   return {
     state,

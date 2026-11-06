@@ -36,6 +36,12 @@ export interface DiarizationSession {
     end: number,
     maxDistanceSeconds?: number,
   ): SpeakerMatch | null;
+  /**
+   * Ask the sidecar for one final, wider diarization pass before the session
+   * closes. Resolves `true` when the final timeline arrived, `false` on
+   * timeout or when the sidecar is unavailable.
+   */
+  flush(timeoutMs?: number): Promise<boolean>;
   close(): void;
 }
 
@@ -43,6 +49,8 @@ interface TimelineMessage {
   type?: string;
   message?: string;
   turns?: SpeakerTurn[];
+  /** Set on the timeline produced by a `flush`. */
+  final?: boolean;
 }
 
 const RECONNECT_DELAY_MS = 2000;
@@ -131,6 +139,20 @@ export function createDiarizationSession(options: {
   let pushedFrames = 0;
   let failures = 0;
 
+  /** Pending `flush()` call, settled by the `final: true` timeline. */
+  let flushResolve: ((ok: boolean) => void) | null = null;
+  let flushTimer: ReturnType<typeof setTimeout> | null = null;
+
+  const settleFlush = (ok: boolean) => {
+    if (flushTimer !== null) {
+      clearTimeout(flushTimer);
+      flushTimer = null;
+    }
+    const resolve = flushResolve;
+    flushResolve = null;
+    resolve?.(ok);
+  };
+
   const queue: Array<{ frame: Buffer; clockMs: number }> = [];
 
   const target = new URL(config.diarization.url);
@@ -190,6 +212,7 @@ export function createDiarizationSession(options: {
       if (message.type === "timeline" && Array.isArray(message.turns)) {
         turns = message.turns.filter(isTurn);
         options.onTimeline();
+        if (message.final) settleFlush(true);
       } else if (message.type === "error") {
         log("sidecar error", { message: message.message ?? "unknown" });
       }
@@ -205,6 +228,7 @@ export function createDiarizationSession(options: {
 
     ws.on("close", () => {
       socket = null;
+      settleFlush(false);
       if (!closed) scheduleReconnect();
     });
   };
@@ -241,8 +265,30 @@ export function createDiarizationSession(options: {
       return matchSpeaker(turns, start, end, maxDistanceSeconds);
     },
 
+    flush(timeoutMs = 6000) {
+      if (closed || flushResolve !== null) return Promise.resolve(false);
+
+      const current = socket;
+      if (!current || current.readyState !== WebSocket.OPEN) {
+        return Promise.resolve(false);
+      }
+
+      return new Promise<boolean>((resolve) => {
+        flushResolve = resolve;
+        flushTimer = setTimeout(() => settleFlush(false), timeoutMs);
+        try {
+          current.send(JSON.stringify({ type: "flush" }));
+          log("flush requested for final speaker pass");
+        } catch (error) {
+          log("could not request final pass", { message: (error as Error).message });
+          settleFlush(false);
+        }
+      });
+    },
+
     close() {
       closed = true;
+      settleFlush(false);
       if (retryTimer !== null) {
         clearTimeout(retryTimer);
         retryTimer = null;
