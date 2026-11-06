@@ -12,6 +12,8 @@ export interface ViewSegment {
   text: string;
   timeMs: number;
   language?: string;
+  /** Display label like "Speaker 1" when the segment is diarized. */
+  speaker?: string;
 }
 
 export interface TranscriptMeta {
@@ -40,6 +42,8 @@ export function toViewSegments(
     text: segment.text,
     timeMs: Math.max(0, Math.round((segment.startTime ?? 0) * 1000)),
     language: segment.language?.name,
+    speaker:
+      segment.speakerId != null ? `Speaker ${segment.speakerId + 1}` : undefined,
   }));
 }
 
@@ -192,6 +196,11 @@ export function summaryToText(
     "",
     "MEDICATIONS",
     list(summary.medications),
+    "",
+    "FLAGGED MEDICATIONS",
+    summary.medicationFlags?.length
+      ? summary.medicationFlags.map((item) => `  • ${item}`).join("\n")
+      : "  • None",
     "",
     "ASSESSMENT",
     summary.assessment || "Not stated",

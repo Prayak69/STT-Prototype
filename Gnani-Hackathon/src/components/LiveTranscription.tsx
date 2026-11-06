@@ -134,6 +134,13 @@ export function TranscriptList({
                   className="rounded-xl border px-3 py-2.5 bg-slate-50/70"
                 >
                   <div className="flex items-center gap-2">
+                    {segment.speaker && (
+                      <span
+                        className="inline-flex items-center rounded-full bg-indigo-100 px-2 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-indigo-700 ring-1 ring-inset ring-indigo-200"
+                      >
+                        {segment.speaker}
+                      </span>
+                    )}
                     <span className="text-[10px] font-medium tabular-nums text-slate-400">
                       {formatClock(segment.timeMs)}
                     </span>

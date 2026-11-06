@@ -149,12 +149,12 @@ function statusCopy(state: BatchState | string): { title: string; hint: string }
     case "starting":
       return {
         title: "Starting the transcription job",
-        hint: "Gnani is queueing the file transcription.",
+        hint: "Gnani is queueing the file for transcription with speaker diarization.",
       };
     case "polling":
       return {
-        title: "Transcribing the file",
-        hint: "Gnani is processing the file. Status is checked every 10 seconds — keep this tab open.",
+        title: "Transcribing and diarizing the file",
+        hint: "Gnani is processing the file and separating speakers. Status is checked every 10 seconds — keep this tab open.",
       };
     case "downloading":
       return {
@@ -184,7 +184,7 @@ function statusCopy(state: BatchState | string): { title: string; hint: string }
     case "complete":
       return {
         title: "Batch transcription complete",
-        hint: "The full file was processed. Results are available below.",
+        hint: "Speaker labels from Gnani's batch diarization are shown alongside each segment.",
       };
     case "cancelled":
       return {

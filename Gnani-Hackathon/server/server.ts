@@ -129,9 +129,9 @@ const upload = multer({
 });
 
 /**
- * Gnani Batch STT proxy for plain transcription (no speaker labels).
+ * Gnani Batch STT proxy.
  *
- * POST   /api/stt/batch                    — upload file + create batch job
+ * POST   /api/stt/batch                    — upload file + create batch job (?diarize=true adds speaker labels)
  * POST   /api/stt/batch/:id/start          — start the job
  * GET    /api/stt/batch/:id                — poll job status
  * GET    /api/stt/batch/:id/files          — get completed file transcript URLs
@@ -147,13 +147,15 @@ app.post("/api/stt/batch", upload.single("file"), async (req, res) => {
   }
 
   try {
+    // Optional ?diarize=true asks Gnani to label speakers (batch diarization).
+    const withDiarization = req.query.diarize === "true";
     const form = buildBatchJobForm(
       {
         buffer: file.buffer,
         name: normalizeAudioFilename(file.originalname, new Uint8Array(file.buffer)),
         type: file.mimetype,
       },
-      { languageCode: "indic-auto" },
+      { languageCode: "indic-auto", withDiarization },
     );
     const job = await createBatchJob(form);
     res.status(201).json(job);

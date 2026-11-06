@@ -126,6 +126,8 @@ export function useAiInsights({
             index,
             timestamp: formatClock((segment.startTime ?? 0) * 1000),
             text: segment.text,
+            speaker:
+              segment.speakerId != null ? `Speaker ${segment.speakerId + 1}` : undefined,
           })),
         });
 

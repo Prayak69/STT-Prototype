@@ -39,6 +39,8 @@ export interface BatchTranscript {
     text: string;
     confidence: number | null;
     language_detected: string | null;
+    /** Present when the job was created with ?diarize=true. */
+    speaker_id?: number | null;
   }>;
 }
 
@@ -51,11 +53,15 @@ async function readError(response: Response, fallback: string): Promise<string> 
   }
 }
 
-export async function createBatchJob(file: File): Promise<BatchJob> {
+export async function createBatchJob(
+  file: File,
+  options: { diarize?: boolean } = {},
+): Promise<BatchJob> {
   const form = new FormData();
   form.append("file", file);
 
-  const response = await fetch("/api/stt/batch", {
+  const url = options.diarize ? "/api/stt/batch?diarize=true" : "/api/stt/batch";
+  const response = await fetch(url, {
     method: "POST",
     body: form,
   });

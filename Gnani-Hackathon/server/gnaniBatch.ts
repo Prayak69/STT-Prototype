@@ -55,6 +55,8 @@ interface TranscriptDocument {
     text: string;
     confidence: number | null;
     language_detected: string | null;
+    /** Present when the job was created with with_diarization: true. */
+    speaker_id?: number | null;
   }>;
 }
 
@@ -142,17 +144,18 @@ export function buildBatchJobForm(
   fileData: File | { buffer: Buffer | ArrayBuffer; name: string; type?: string },
   options: {
     languageCode?: string;
+    /** Ask Gnani to produce speaker-labelled segments (batch diarization). */
+    withDiarization?: boolean;
   } = {},
 ): FormData {
-  const { languageCode = "indic-auto" } = options;
+  const { languageCode = "indic-auto", withDiarization = false } = options;
 
   const configJson = JSON.stringify({
     model: "prisma-v3.0",
     language_code: languageCode,
     format: "transcribe",
     mode: "transcribe",
-    // Plain transcript only: no speaker labels.
-    with_diarization: false,
+    with_diarization: withDiarization,
   });
 
   const form = new FormData();

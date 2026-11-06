@@ -117,10 +117,11 @@ export function StartActions({
         Audio streams directly to the private server proxy — the API key never reaches the browser.
       </p>
       <p className="mt-1 text-[11px] text-slate-400">
-        Uploads: WAV, MP3, M4A, AAC, OGG, FLAC or WebM · up to 10 MB. Transcripts include language detection.
+        Uploads: WAV, MP3, M4A, AAC, OGG, FLAC or WebM · up to 10 MB. Files are diarized and transcribed by the Gnani batch API.
       </p>
     </section>
   );
 }
+
 
 

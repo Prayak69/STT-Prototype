@@ -14,6 +14,8 @@ export interface ConsultationSummary {
   symptoms: string[];
   history: string;
   medications: string[];
+  /** Medicines that sound like no real drug and could not be confidently corrected. */
+  medicationFlags: string[];
   assessment: string;
   plan: string[];
   followUp: string;
@@ -42,6 +44,21 @@ export interface AiStatus {
   configured: boolean;
   provider: string;
   model: string;
+}
+
+export interface AiInsightRequestSegment {
+  index: number;
+  timestamp: string;
+  text: string;
+  /** "Speaker 1" ... when the transcript is diarized. */
+  speaker?: string;
+}
+
+export interface AiInsightRequestPayload {
+  fileName: string;
+  language: string;
+  targetLanguage: TranslationLanguage;
+  segments: AiInsightRequestSegment[];
 }
 
 export interface InsightsPayload {

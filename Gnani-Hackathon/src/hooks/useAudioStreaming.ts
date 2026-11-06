@@ -32,6 +32,8 @@ export interface TranscriptSegment {
   key: string;
   text: string;
   language: LanguageInfo | null;
+  /** 0-based speaker index from batch diarization, null when not diarized. */
+  speakerId?: number | null;
   segmentIndex?: number;
   receivedAt: number;
   /** Segment start time in seconds, relative to the start of the audio. */
@@ -120,8 +122,84 @@ export function useAudioStreaming() {
   const requestIdRef = useRef<string | null>(null);
   const seenSegmentKeysRef = useRef<Set<string>>(new Set());
 
-  const updatePhase = useCallback((next: SessionState) => {
-    stateRef.current = next;
+  // Side recording (webm/opus or mp4) of the live session, used to run the
+  // Gnani batch (diarized) transcription once the conversation ends.
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const recorderChunksRef = useRef<Blob[]>([]);
+  const recordingBlobRef = useRef<{ blob: Blob; mimeType: string } | null>(null);
+
+  /** Begin capturing the mic stream so the session can be sent to the batch API. */
+  const beginRecording = useCallback(() => {
+    recorderChunksRef.current = [];
+    recordingBlobRef.current = null;
+    mediaRecorderRef.current = null;
+    const stream = mediaStreamRef.current;
+    if (!stream || typeof MediaRecorder === "undefined") return;
+
+    const mimeType =
+      ["audio/webm;codecs=opus", "audio/webm", "audio/mp4"].find((type) =>
+        MediaRecorder.isTypeSupported(type),
+      ) ?? "";
+    try {
+      const recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
+      mediaRecorderRef.current = recorder;
+      recorder.ondataavailable = (event) => {
+        if (event.data.size > 0) recorderChunksRef.current.push(event.data);
+      };
+      recorder.onstop = () => {
+        const payloadType = recorder.mimeType || mimeType || "audio/webm";
+        recordingBlobRef.current = {
+          blob: new Blob(recorderChunksRef.current, { type: payloadType }),
+          mimeType: payloadType,
+        };
+        recorderChunksRef.current = [];
+        mediaRecorderRef.current = null;
+      };
+      recorder.start(4096);
+    } catch {
+      mediaRecorderRef.current = null;
+    }
+  }, []);
+
+  /** Stop the side recording and wait for the blob to be assembled. */
+  const finalizeRecording = useCallback(
+    (): Promise<void> =>
+      new Promise<void>((resolve) => {
+        const recorder = mediaRecorderRef.current;
+        if (!recorder || recorder.state === "inactive") {
+          resolve();
+          return;
+        }
+        let settled = false;
+        const done = () => {
+          if (!settled) {
+            settled = true;
+            resolve();
+          }
+        };
+        recorder.addEventListener("stop", done, { once: true });
+        try {
+          recorder.stop();
+        } catch {
+          done();
+        }
+        window.setTimeout(done, 2000);
+      }),
+    [],
+  );
+
+  /** Consumes the finished recording as a File ready for the batch upload. */
+  const takeRecording = useCallback((): File | null => {
+    const recording = recordingBlobRef.current;
+    recordingBlobRef.current = null;
+    if (!recording || recording.blob.size === 0) return null;
+    const ext = recording.mimeType.includes("mp4") ? ".m4a" : ".webm";
+    return new File([recording.blob], `voxnote-session${ext}`, {
+      type: recording.blob.type,
+    });
+  }, []);
+
+  const updatePhase = useCallback((next: SessionState) => {    stateRef.current = next;
     setState(next);
   }, []);
 
@@ -569,6 +647,10 @@ export function useAudioStreaming() {
       return;
     }
 
+    // Capture the conversation so the completed session can be re-run through
+    // the diarized Gnani batch API.
+    beginRecording();
+
     ws.binaryType = "arraybuffer";
     wsRef.current = ws;
 
@@ -621,7 +703,7 @@ export function useAudioStreaming() {
 
       fail(friendlySocketClose(event.code));
     };
-  }, [clearConnectTimer, fail, finishStop, handleFrame, resolveStopWaiter, updatePhase]);
+  }, [beginRecording, clearConnectTimer, fail, finishStop, handleFrame, resolveStopWaiter, updatePhase]);
 
   const stop = useCallback(async () => {
     const phase = stateRef.current;
@@ -632,6 +714,10 @@ export function useAudioStreaming() {
     setSpeechActive(false);
     recordingRef.current = false;
     stopDurationTimer(true);
+
+    // Finish the side recording first so the blob is ready when the
+    // session completes.
+    await finalizeRecording();
     disposeAudio();
 
     const ws = wsRef.current;
@@ -669,6 +755,7 @@ export function useAudioStreaming() {
     finishStop();
   }, [
     disposeAudio,
+    finalizeRecording,
     finishStop,
     resolveStopWaiter,
     scheduleFinalSettle,
@@ -743,6 +830,7 @@ export function useAudioStreaming() {
     start,
     stop,
     reset,
+    takeRecording,
     clearTranscript,
     dismissError,
   };
