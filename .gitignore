@@ -8,4 +8,4 @@ conformer_assets/
 *.log
 inference_log.txt
 inference_log.jsonl
-input_audios
+input_audios    
