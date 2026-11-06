@@ -363,17 +363,17 @@ export async function analyzeConsultation(
 - Keep each list item short (one line where possible).
 
 MEDICATION NAME RULES (apply to both the summary and the translation)
-Speech-to-text often mangles Indian brand names into similar-sounding nonsense.
-- If a medication name in the transcript is clearly a phonetic mistranscription of a real medicine, silently correct it to the proper brand/generic name everywhere (summary AND translation). Examples: "AC lock" → "Aciloc" (Ranitidine); "dowfimol" → "Dolo"; "taxim O" → "Taxim-O"; "zyrtec D" → "Zyrtec-D"; "pan 40" → "Pan 40"; "citorcitabine" → "Citirizine".
-- Judge only by how the name is SPOKEN in the source language, not by its spelling. Expand well-known abbreviations (e.g. "Dolo" → Dolo 650 / Paracetamol) when the dose is stated.
-- Keep the corrected real name unchanged in the translation's "medications" and every place it is mentioned, exactly as a correct brand name.
-- If the spoken form does NOT match any real medicine and instead is a mispronunciation of a DIFFERENT real medicine (e.g. "dolocitamol" said instead of "paracetamol" — a wrong drug), do NOT silently correct it: include it in "medicationFlags" prefixed with 'Wrong medication: ' (e.g. 'Wrong medication: "dolocitamol" — possibly meant "paracetamol"'). Keep the original as spoken in the summary body as well.
-- "medicationFlags" is only for medicines that were spoken wrongly, not for ordinary misspellings you corrected.
+Speech-to-text frequently mangles medication names — Indian and international brand names as well as generic molecules — into similar-sounding nonsense. Use your own broad drug knowledge; the examples are illustrative only, the rule applies to ANY medicine you can recognise.
+- If a medication name in the transcript is a phonetic/similar-sounding mistranscription of any real medicine (brand or generic), silently correct it to the proper name everywhere (summary AND translation). Examples only: "AC lock" → "Aciloc" (Ranitidine); "dowfimol" → "Dolo"; "axi-tromacil" → "Azithromycin"; "septran dp" → "Septran DS"; this same reasoning must extend to every drug you know.
+- Judge only by how the name is SPOKEN in the source language, not by its spelling. Expand well-known abbreviations and dose shorthand when stated.
+- Keep the corrected real name unchanged in the translation and every place it is mentioned, exactly as a correct brand/generic name.
+- If the spoken form does NOT sound like any real medicine you can identify with confidence, and it appears to be a mispronunciation of a DIFFERENT real medicine (e.g. "dolocitamol" said instead of "paracetamol" — a different/wrong drug), do NOT silently correct it: include it in "medicationFlags" prefixed with 'Wrong medication: ' (e.g. 'Wrong medication: "dolocitamol" — possibly meant "paracetamol"'). Keep the original as spoken in the summary body as well.
+- "medicationFlags" is only for medicines that were spoken wrongly or that match no real drug — not for ordinary misspellings you confidently corrected.
 
 2) SEGMENT TRANSLATION
 ${translationInstruction(targetLanguage)}
 - Translate every numbered segment exactly once. If the segment carries a speaker label, preserve the speaker's turn so the translation reads like a conversation.
-- Apply the MEDICATION NAME RULES above when translating: corrected brand names appear correctly in the target language; a wrong medication stays spoken form as in the transcript, flagged by the summary.
+- Apply the MEDICATION NAME RULES above when translating: any recognised medicine appears under its correct name in the target language without being transliterated back wrong; a name that matched no real drug stays as spoken and is left for the summary's flag.
 - Preserve the meaning, tone, and clinical details. Do not add advice or commentary.
 - Do not merge, split, reorder, or omit segments.
 - If a segment is already in the target language, return it unchanged.
