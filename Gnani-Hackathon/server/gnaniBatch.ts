@@ -40,6 +40,7 @@ interface JobFile {
   mode: string;
   transcript_url: string | null;
   status: string;
+  error_message?: string | null;
 }
 
 interface TranscriptDocument {
@@ -276,11 +277,13 @@ export async function cancelBatchJob(jobId: string): Promise<BatchJob> {
 }
 
 /**
- * Get completed file results for a job, including transcript URLs.
+ * Get files for a job, including transcript URLs for completed ones. Pass a
+ * Gnani status filter (e.g. "FAILED") to narrow the result; omit for all.
  */
-export async function getBatchJobFiles(jobId: string): Promise<JobFile[]> {
+export async function getBatchJobFiles(jobId: string, status?: string): Promise<JobFile[]> {
+  const filter = status && status !== "ALL" ? `?status=${encodeURIComponent(status)}` : "";
   const res = await gnaniFetch(
-    `${GNANI_BASE}/stt/v3/batch/jobs/${encodeURIComponent(jobId)}/files?status=COMPLETED`,
+    `${GNANI_BASE}/stt/v3/batch/jobs/${encodeURIComponent(jobId)}/files${filter}`,
     {
       method: "GET",
       headers: batchHeaders(),

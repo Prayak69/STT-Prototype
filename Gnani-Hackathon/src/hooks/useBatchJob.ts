@@ -236,9 +236,20 @@ export function useBatchJob() {
 
             if (status.status === "FAILED" || status.status === "CANCELLED") {
               stopPolling();
+              // Pull Gnani's per-file error message for the real reason.
+              let detail = status.cancel_reason ?? "";
+              if (!detail) {
+                try {
+                  const files = await getBatchJobFiles(job.job_id, "ALL");
+                  const failed = files.find((f) => f.error_message);
+                  detail = failed?.error_message ?? "";
+                } catch {
+                  // Best effort only.
+                }
+              }
               fail(
-                `Batch transcription ${status.status.toLowerCase()}. ${
-                  status.cancel_reason ?? ""
+                `Batch transcription ${status.status.toLowerCase()}.${
+                  detail ? ` ${detail}` : ""
                 }`.trim(),
               );
               return;

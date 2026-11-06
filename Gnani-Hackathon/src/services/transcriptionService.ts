@@ -25,6 +25,8 @@ export interface BatchFile {
   language_code?: string;
   duration_seconds?: number;
   status: string;
+  /** Gnani's per-file failure reason, present when status is FAILED. */
+  error_message?: string | null;
 }
 
 export interface BatchTranscript {
@@ -98,9 +100,13 @@ export async function getBatchJobStatus(
   return (await response.json()) as BatchJobStatus;
 }
 
-export async function getBatchJobFiles(jobId: string): Promise<BatchFile[]> {
+export async function getBatchJobFiles(
+  jobId: string,
+  status?: string,
+): Promise<BatchFile[]> {
+  const filter = status && status !== "ALL" ? `?status=${encodeURIComponent(status)}` : "";
   const response = await fetch(
-    `/api/stt/batch/${encodeURIComponent(jobId)}/files?status=COMPLETED`,
+    `/api/stt/batch/${encodeURIComponent(jobId)}/files${filter}`,
   );
 
   if (!response.ok) {
