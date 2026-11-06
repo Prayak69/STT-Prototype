@@ -225,7 +225,11 @@ app.get("/api/stt/batch/:jobId", async (req, res) => {
 
 app.get("/api/stt/batch/:jobId/files", async (req, res) => {
   try {
-    const status = typeof req.query.status === "string" ? req.query.status : "COMPLETED";
+    // Optional status filter; no filter returns every file (including the
+    // failed ones, which carry Gnani's error_message).
+    const status = typeof req.query.status === "string" && req.query.status.trim()
+      ? req.query.status.trim()
+      : undefined;
     const files = await getBatchJobFiles(req.params.jobId, status);
     res.json({ data: files });
   } catch (error) {

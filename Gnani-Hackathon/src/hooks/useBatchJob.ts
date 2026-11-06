@@ -240,9 +240,10 @@ export function useBatchJob() {
               let detail = status.cancel_reason ?? "";
               if (!detail) {
                 try {
-                  const files = await getBatchJobFiles(job.job_id, "ALL");
-                  const failed = files.find((f) => f.error_message);
-                  detail = failed?.error_message ?? "";
+                  // No status filter: returns every file, failed ones included.
+                  const files = await getBatchJobFiles(job.job_id);
+                  const failedFile = files.find((f) => f.error_message);
+                  detail = failedFile?.error_message ?? "";
                 } catch {
                   // Best effort only.
                 }

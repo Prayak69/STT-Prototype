@@ -43,7 +43,11 @@ export function toViewSegments(
     timeMs: Math.max(0, Math.round((segment.startTime ?? 0) * 1000)),
     language: segment.language?.name,
     speaker:
-      segment.speakerId != null ? `Speaker ${segment.speakerId + 1}` : undefined,
+      segment.speakerId != null && segment.speakerId > 0
+        ? `Speaker ${segment.speakerId}`
+        : segment.speakerId === 0
+          ? "Speaker 1"
+          : undefined,
   }));
 }
 
