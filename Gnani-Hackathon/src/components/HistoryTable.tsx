@@ -11,17 +11,6 @@ interface HistoryTableProps {
   limit?: number;
 }
 
-function speakerCount(record: SessionRecord): number {
-  const speakers = new Set<string>();
-  for (const segment of record.segments) {
-    if (segment.speakerName) speakers.add(segment.speakerName);
-    else if (segment.speakerId !== null && segment.speakerId !== undefined) {
-      speakers.add(`speaker-${segment.speakerId}`);
-    }
-  }
-  return speakers.size;
-}
-
 function SourceBadge({ record }: { record: SessionRecord }) {
   return (
     <span className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-slate-500 ring-1 ring-inset ring-slate-200">
@@ -234,7 +223,7 @@ export function HistoryTable({
                     </span>
                     <span className="mt-0.5 block truncate text-[10px] text-slate-400">
                       {record.notes ??
-                        `${record.segments.length} segments · ${speakerCount(record)} speakers`}
+                        `${record.segments.length} segments`}
                     </span>
                   </span>
                 </span>

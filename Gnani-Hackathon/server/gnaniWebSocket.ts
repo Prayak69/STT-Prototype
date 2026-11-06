@@ -2,7 +2,6 @@ import { randomUUID } from "node:crypto";
 import type { IncomingMessage, Server as HttpServer } from "node:http";
 import WebSocket, { WebSocketServer } from "ws";
 import { config } from "./config";
-import { createDiarizationSession, type DiarizationSession } from "./diarization";
 import { logger } from "./logger";
 
 const REALTIME_PATH = "/ws/stt/realtime";
@@ -10,23 +9,6 @@ const BATCH_PATH = "/ws/stt/batch";
 /** Legacy realtime path kept for older clients. */
 const LEGACY_PATH = "/ws/stt";
 const PCM_FRAME_BYTES = 1024;
-/** One 1,024-byte frame is 512 samples at 16 kHz. */
-const PCM_FRAME_MS = 32;
-/**
- * How far a transcript may sit from the nearest diarization turn before we
- * stop using a nearby guess. Segments matched through a gap keep waiting for
- * a later timeline so the provisional label can be corrected.
- */
-const SPEAKER_MATCH_WINDOW_SECONDS = 8;
-
-interface PendingTranscript {
-  segment_id?: string | number;
-  segment_index?: number;
-  start: number;
-  end: number;
-  /** Last provisional label sent to the browser, to avoid duplicate updates. */
-  lastSpeaker?: number;
-}
 
 /**
  * Batch uploads are sent faster than real time, so the browser uses a
@@ -95,6 +77,7 @@ function upstreamHeaders(requestId: string): Record<string, string> {
  * - /ws/stt/batch    — uploaded file sessions with flow control
  *
  * Both attach the Gnani credentials server-side; the browser never sees them.
+ * Upstream frames are forwarded unchanged, so the transcript stays plain text.
  */
 export function attachSttProxy(server: HttpServer): { close: () => void } {
   const wss = new WebSocketServer({
@@ -189,235 +172,6 @@ export function attachSttProxy(server: HttpServer): { close: () => void } {
 
     const startedAt = Date.now();
 
-    /**
-     * Realtime-only speaker labeling. `audioClockMs` is the stream time of the
-     * audio actually forwarded to Gnani, so it lines up with the sidecar's
-     * timeline (both start at 0 and advance one 32 ms frame at a time).
-     */
-    let audioClockMs = 0;
-    /** Stream time of the last Gnani `processing` event (end of speech). */
-    let lastSpeechEndMs: number | null = null;
-    /** Stable ids for transcripts that arrive without a Gnani `segment_id`. */
-    let syntheticSegmentId = 0;
-    const pendingTranscripts = new Map<string, PendingTranscript>();
-    let diarization: DiarizationSession | null = null;
-
-    /**
-     * Stable sidecar ids can skip numbers (1, 2, 4) when a cluster is dropped.
-     * Renumber them by first appearance so the UI is always Speaker 1, 2, 3...
-     */
-    const displaySpeakers = new Map<number, number>();
-    const displaySpeakerId = (stableId: number): number => {
-      const existing = displaySpeakers.get(stableId);
-      if (existing !== undefined) return existing;
-      const next = displaySpeakers.size;
-      displaySpeakers.set(stableId, next);
-      return next;
-    };
-
-    /**
-     * Push speaker labels for transcripts that are still waiting for a window
-     * that covers them. `final` additionally releases every pending segment and
-     * sends a closing marker so the browser knows the labels will not change
-     * again.
-     */
-    const emitSpeakerUpdates = (options: { final?: boolean } = {}) => {
-      const final = options.final === true;
-
-      if (!diarization || pendingTranscripts.size === 0) {
-        if (final) sendJson(client, { type: "speaker_update", updates: [], final: true });
-        return;
-      }
-
-      const updates: Array<Record<string, unknown>> = [];
-      const staleBefore = audioClockMs / 1000 - 600;
-      for (const [key, item] of pendingTranscripts) {
-        if (!final && item.end < staleBefore) {
-          pendingTranscripts.delete(key);
-          continue;
-        }
-        // On the final pass fall back to the nearest turn at any distance, so a
-        // segment is never left with a bare "Speaker" label when the sidecar
-        // knows at least one speaker.
-        const match = diarization.matchFor(
-          item.start,
-          item.end,
-          final ? Number.POSITIVE_INFINITY : SPEAKER_MATCH_WINDOW_SECONDS,
-        );
-        if (match === null) {
-          if (final) pendingTranscripts.delete(key);
-          continue;
-        }
-        const speakerId = displaySpeakerId(match.speaker);
-        if (final) pendingTranscripts.delete(key);
-        if (item.lastSpeaker === speakerId) continue;
-        // Before the final confirmation only overwrite a label when a real turn
-        // covers the segment; a nearest-turn guess must not make badges flicker.
-        if (!final && !match.exact && item.lastSpeaker !== undefined) continue;
-
-        // Keep every transcript until the session ends. A later window (or the
-        // final confirmation) can correct a label that an early, partial window
-        // got wrong; deleting early would freeze that mistake into the record.
-        item.lastSpeaker = speakerId;
-        updates.push({
-          segment_id: item.segment_id,
-          segment_index: item.segment_index,
-          // The UI expects Gnani-style 0-based ids (`speaker_id + 1` is shown).
-          speaker_id: speakerId,
-        });
-      }
-
-      if (updates.length === 0 && !final) return;
-      if (client.readyState !== WebSocket.OPEN) return;
-
-      sendJson(
-        client,
-        final
-          ? { type: "speaker_update", updates, final: true }
-          : { type: "speaker_update", updates },
-      );
-      if (updates.length > 0) {
-        log("speaker labels updated", { count: updates.length, final });
-      }
-    };
-
-    /**
-     * After the client commits, give Gnani time to deliver the last transcript
-     * and then confirm the final labels from the latest timeline. Debounced, so
-     * several final segments are all captured.
-     */
-    const FINAL_FLUSH_DELAY_MS = 900;
-    const FINAL_FLUSH_TIMEOUT_MS = 4000;
-    let finalFlushTimer: ReturnType<typeof setTimeout> | null = null;
-    let finalFlushStarted = false;
-
-    const runFinalSpeakerPass = async () => {
-      if (finalFlushStarted) return;
-      finalFlushStarted = true;
-
-      if (!diarization) {
-        emitSpeakerUpdates({ final: true });
-        return;
-      }
-
-      const ok = await diarization.flush(FINAL_FLUSH_TIMEOUT_MS);
-      if (ok) {
-        log("final speaker labels confirmed");
-      } else {
-        log("final speaker confirmation unavailable; using current timeline");
-      }
-      // Always release the browser, even when the sidecar timed out.
-      emitSpeakerUpdates({ final: true });
-    };
-
-    const scheduleFinalSpeakerPass = () => {
-      if (finalFlushTimer !== null) clearTimeout(finalFlushTimer);
-      finalFlushTimer = setTimeout(() => {
-        finalFlushTimer = null;
-        void runFinalSpeakerPass();
-      }, FINAL_FLUSH_DELAY_MS);
-    };
-
-    if (!isBatch && config.diarization.enabled) {
-      diarization = createDiarizationSession({
-        sessionId,
-        onTimeline: emitSpeakerUpdates,
-        log,
-      });
-    }
-
-    /**
-     * Attach `speaker_id` to a Gnani transcript frame when the sidecar already
-     * knows the region. Otherwise remember the interval and send a
-     * `speaker_update` once the next window covers it.
-     */
-    const annotateTranscript = (text: string): string => {
-      if (!diarization) return text;
-
-      let frame: Record<string, unknown>;
-      try {
-        frame = JSON.parse(text) as Record<string, unknown>;
-      } catch {
-        return text;
-      }
-
-      // Gnani signals end-of-speech just before transcription starts. Anchoring
-      // to this event is far more accurate than using the transcript arrival
-      // time, which includes Gnani's processing latency.
-      if (frame.type === "processing") {
-        // VAD reports end-of-speech after the configured silence window, so
-        // back off that silence to land on the real speech boundary.
-        lastSpeechEndMs = Math.max(
-          0,
-          audioClockMs - config.stt.minSilenceMs,
-        );
-        return text;
-      }
-      if (frame.type !== "transcript") return text;
-
-      // The session is winding down: keep pushing the final pass back until the
-      // last transcript has arrived, so its audio is part of the wider pass.
-      if (finalFlushTimer !== null) scheduleFinalSpeakerPass();
-
-      // Guarantee a stable id so late `speaker_update` frames can always be
-      // matched in the browser, even if Gnani omits `segment_id`.
-      if (frame.segment_id === undefined || frame.segment_id === null) {
-        syntheticSegmentId += 1;
-        frame.segment_id = `rt-${syntheticSegmentId}`;
-      }
-
-      const latencyMs = Number(frame.latency);
-      const endMs =
-        lastSpeechEndMs ??
-        Math.max(
-          0,
-          audioClockMs -
-            config.stt.minSilenceMs -
-            (Number.isFinite(latencyMs) ? latencyMs : 0),
-        );
-      lastSpeechEndMs = null;
-
-      if (typeof frame.speaker_id === "number") return JSON.stringify(frame);
-
-      const durationMs = Number(frame.audio_duration_ms);
-      const end = endMs / 1000;
-      const speech =
-        Number.isFinite(durationMs) && durationMs > 0
-          ? Math.min(durationMs / 1000, 30)
-          : 1.5;
-      const start = Math.max(0, end - speech);
-
-      const segmentId = frame.segment_id as string | number | undefined;
-      const segmentIndex =
-        typeof frame.segment_index === "number" ? frame.segment_index : undefined;
-
-      const key = `id:${segmentId}`;
-      const match = diarization.matchFor(
-        start,
-        end,
-        SPEAKER_MATCH_WINDOW_SECONDS,
-      );
-
-      const displayId = match ? displaySpeakerId(match.speaker) : null;
-      if (displayId !== null) {
-        // The UI (like Gnani Batch) expects 0-based ids (`speaker_id + 1`).
-        frame.speaker_id = displayId;
-      }
-
-      // Remember every transcript interval, even when this window already
-      // labels it: a later window (or the final confirmation) can correct it.
-      if (pendingTranscripts.size < 1000) {
-        pendingTranscripts.set(key, {
-          segment_id: segmentId,
-          segment_index: segmentIndex,
-          start,
-          end,
-          lastSpeaker: displayId ?? undefined,
-        });
-      }
-      return JSON.stringify(frame);
-    };
-
     // Batch-only flow control. Realtime sockets keep their original behaviour.
     const batchQueue: Buffer[] = [];
     let batchForwarded = 0;
@@ -488,8 +242,7 @@ export function attachSttProxy(server: HttpServer): { close: () => void } {
       if (!isBinary) {
         const text = payload.toString("utf8");
         if (text.includes('"transcript"')) transcripts += 1;
-        if (client.readyState !== WebSocket.OPEN) return;
-        client.send(isBatch ? text : annotateTranscript(text));
+        if (client.readyState === WebSocket.OPEN) client.send(text);
         return;
       }
 
@@ -529,11 +282,6 @@ export function attachSttProxy(server: HttpServer): { close: () => void } {
 
     upstream.on("close", (code, reason) => {
       stopBatchPump();
-      if (finalFlushTimer !== null) {
-        clearTimeout(finalFlushTimer);
-        finalFlushTimer = null;
-      }
-      diarization?.close();
       const reasonText = reason.toString().slice(0, 200);
       log("upstream closed", {
         code,
@@ -604,8 +352,6 @@ export function attachSttProxy(server: HttpServer): { close: () => void } {
 
         upstream.send(frame);
         framesSent += 1;
-        audioClockMs += PCM_FRAME_MS;
-        diarization?.pushFrame(frame);
         return;
       }
 
@@ -622,9 +368,6 @@ export function attachSttProxy(server: HttpServer): { close: () => void } {
 
       const type = (message as { type?: unknown }).type;
       if (type === "commit") {
-        // Realtime stop: schedule the final, wider diarization pass. It runs
-        // after the last transcript so the tail of the session gets labelled.
-        if (!isBatch) scheduleFinalSpeakerPass();
         if (upstream.readyState === WebSocket.OPEN) {
           if (isBatch) {
             // Preserve ordering: the commit is sent after every queued frame.
@@ -641,11 +384,6 @@ export function attachSttProxy(server: HttpServer): { close: () => void } {
     client.on("close", (code, reason) => {
       clientClosed = true;
       stopBatchPump();
-      if (finalFlushTimer !== null) {
-        clearTimeout(finalFlushTimer);
-        finalFlushTimer = null;
-      }
-      diarization?.close();
       const durationMs = Date.now() - startedAt;
       log("browser closed", {
         code,

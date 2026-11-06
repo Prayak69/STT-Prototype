@@ -38,7 +38,7 @@ const BUSY_STATES: string[] = [
   "connecting",
   "processing",
   "finalizing",
-  // Diarization (REST) busy states
+  // Batch transcription (REST) busy states
   "uploading",
   "starting",
   "polling",
@@ -77,7 +77,7 @@ function toneFor(state: BatchState | string): Tone {
     case "polling":
     case "downloading":
       return {
-        label: state === "polling" ? "Diarizing" : "Fetching transcripts",
+        label: state === "polling" ? "Transcribing" : "Fetching transcripts",
         pill: "bg-indigo-50 text-indigo-700 ring-indigo-200",
         dot: "bg-indigo-500 recording-dot",
         bar: "bg-indigo-600",
@@ -144,22 +144,22 @@ function statusCopy(state: BatchState | string): { title: string; hint: string }
     case "uploading":
       return {
         title: "Uploading your audio",
-        hint: "Sending the file to the server for speaker diarization.",
+        hint: "Sending the file to the server for transcription.",
       };
     case "starting":
       return {
-        title: "Starting the diarization job",
-        hint: "Gnani is queueing the speaker-separated transcription.",
+        title: "Starting the transcription job",
+        hint: "Gnani is queueing the file transcription.",
       };
     case "polling":
       return {
-        title: "Separating speakers",
+        title: "Transcribing the file",
         hint: "Gnani is processing the file. Status is checked every 10 seconds — keep this tab open.",
       };
     case "downloading":
       return {
-        title: "Fetching speaker transcript",
-        hint: "Downloading the diarized segments.",
+        title: "Fetching transcript",
+        hint: "Downloading the transcript segments.",
       };
     case "connecting":
       return {
@@ -419,26 +419,26 @@ export function BatchPanel({
 
         <div className="mt-5 flex flex-wrap items-center gap-2">
           {showGenerate && (
-          <>
-            <button
-              type="button"
-              onClick={onGenerate}
-              className="inline-flex items-center gap-2 rounded-lg bg-indigo-600 px-4 py-2.5 text-sm font-medium text-white shadow-sm shadow-indigo-600/20 transition-colors hover:bg-indigo-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600"
-            >
-              <Play className="h-4 w-4" aria-hidden="true" />
-              Generate Transcript
-            </button>
-            <button
-              type="button"
-              onClick={onReset}
-              className="inline-flex items-center rounded-lg px-4 py-2.5 text-sm font-medium transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 border border-slate-200 bg-white text-slate-600 hover:bg-slate-50"
-            >
-              Choose another file
-            </button>
-          </>
-        )}
+            <>
+              <button
+                type="button"
+                onClick={onGenerate}
+                className="inline-flex items-center gap-2 rounded-lg bg-indigo-600 px-4 py-2.5 text-sm font-medium text-white shadow-sm shadow-indigo-600/20 transition-colors hover:bg-indigo-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600"
+              >
+                <Play className="h-4 w-4" aria-hidden="true" />
+                Generate Transcript
+              </button>
+              <button
+                type="button"
+                onClick={onReset}
+                className="inline-flex items-center rounded-lg px-4 py-2.5 text-sm font-medium transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 border border-slate-200 bg-white text-slate-600 hover:bg-slate-50"
+              >
+                Choose another file
+              </button>
+            </>
+          )}
 
-        {state === "complete" && (
+          {state === "complete" && (
             <button
               type="button"
               onClick={onReset}

@@ -6,14 +6,14 @@ import type { Response } from "express";
 import multer from "multer";
 import { assertConfig, config } from "./config";
 import {
-  buildDiarizeJobForm,
-  cancelDiarizeJob,
-  createDiarizeJob,
-  downloadDiarizeTranscript,
-  getDiarizeJobFiles,
-  getDiarizeJobStatus,
+  buildBatchJobForm,
+  cancelBatchJob,
+  createBatchJob,
+  downloadBatchTranscript,
+  getBatchJobFiles,
+  getBatchJobStatus,
   normalizeAudioFilename,
-  startDiarizeJob,
+  startBatchJob,
 } from "./gnaniBatch";
 import { attachSttProxy } from "./gnaniWebSocket";
 import {
@@ -46,19 +46,17 @@ function parseAiSegments(value: unknown): AiSegmentInput[] | null {
     if (!item || typeof item !== "object") return null;
     const record = item as Record<string, unknown>;
     const index = typeof record.index === "number" ? record.index : Number(record.index);
-    const speaker = typeof record.speaker === "string" ? record.speaker.trim() : "";
     const timestamp = typeof record.timestamp === "string" ? record.timestamp.trim() : "";
     const text = typeof record.text === "string" ? record.text.trim() : "";
 
     if (!Number.isInteger(index) || index < 0) return null;
-    if (!speaker || speaker.length > 80) return null;
     if (!timestamp || timestamp.length > 24) return null;
     if (!text || text.length > 6000) return null;
 
     totalChars += text.length;
     if (totalChars > MAX_AI_TRANSCRIPT_CHARS) return null;
 
-    segments.push({ index, speaker, timestamp, text });
+    segments.push({ index, timestamp, text });
   }
 
   return segments;
@@ -107,7 +105,7 @@ app.post("/api/ai/analyze", async (req, res) => {
 
   if (!segments) {
     res.status(400).json({
-      error: "Send between 1 and 300 valid transcript segments (speaker, timestamp, text).",
+      error: "Send between 1 and 300 valid transcript segments (timestamp, text).",
     });
     return;
   }
@@ -131,17 +129,17 @@ const upload = multer({
 });
 
 /**
- * Gnani Batch STT proxy for speaker diarization.
+ * Gnani Batch STT proxy for plain transcription (no speaker labels).
  *
- * POST   /api/stt/batch/diarize        — upload file + create diarization job
- * POST   /api/stt/batch/diarize/:id/start — start the job
- * GET    /api/stt/batch/diarize/:id    — poll job status
- * GET    /api/stt/batch/diarize/:id/files — get completed file transcript URLs
- * GET    /api/stt/batch/diarize/download — download a transcript URL (proxy)
+ * POST   /api/stt/batch                    — upload file + create batch job
+ * POST   /api/stt/batch/:id/start          — start the job
+ * GET    /api/stt/batch/:id                — poll job status
+ * GET    /api/stt/batch/:id/files          — get completed file transcript URLs
+ * GET    /api/stt/batch/download           — download a transcript URL (proxy)
  *
  * The GNANI_API_KEY is attached server-side; the browser never sees it.
  */
-app.post("/api/stt/batch/diarize", upload.single("file"), async (req, res) => {
+app.post("/api/stt/batch", upload.single("file"), async (req, res) => {
   const file = req.file;
   if (!file) {
     res.status(400).json({ error: "No audio file provided." });
@@ -149,19 +147,19 @@ app.post("/api/stt/batch/diarize", upload.single("file"), async (req, res) => {
   }
 
   try {
-    const form = buildDiarizeJobForm(
+    const form = buildBatchJobForm(
       {
         buffer: file.buffer,
         name: normalizeAudioFilename(file.originalname, new Uint8Array(file.buffer)),
         type: file.mimetype,
       },
-      { languageCode: "indic-auto", numSpeakers: 5 },
+      { languageCode: "indic-auto" },
     );
-    const job = await createDiarizeJob(form);
+    const job = await createBatchJob(form);
     res.status(201).json(job);
   } catch (error) {
     const err = error as Error & { cause?: Error };
-    logger.error("Gnani batch diarize create failed", {
+    logger.error("Gnani batch create failed", {
       error: err.message,
       cause: err.cause?.message,
     });
@@ -175,13 +173,13 @@ app.post("/api/stt/batch/diarize", upload.single("file"), async (req, res) => {
 });
 
 app.post(
-  "/api/stt/batch/diarize/:jobId/start",
+  "/api/stt/batch/:jobId/start",
   async (req, res) => {
     try {
-      const job = await startDiarizeJob(req.params.jobId);
+      const job = await startBatchJob(req.params.jobId);
       res.json(job);
     } catch (error) {
-      logger.error("Gnani batch diarize start failed", {
+      logger.error("Gnani batch start failed", {
         jobId: req.params.jobId,
         error: (error as Error).message,
       });
@@ -192,17 +190,17 @@ app.post(
 
 // NOTE: must be registered before the "/:jobId" routes or Express will match
 // "download" as a jobId.
-app.get("/api/stt/batch/diarize/download", async (req, res) => {
+app.get("/api/stt/batch/download", async (req, res) => {
   const url = req.query.url;
   if (typeof url !== "string") {
     res.status(400).json({ error: "Missing url query parameter." });
     return;
   }
   try {
-    const transcript = await downloadDiarizeTranscript(url);
+    const transcript = await downloadBatchTranscript(url);
     res.json(transcript);
   } catch (error) {
-    logger.error("Gnani batch diarize download failed", {
+    logger.error("Gnani batch download failed", {
       url,
       error: (error as Error).message,
     });
@@ -210,12 +208,12 @@ app.get("/api/stt/batch/diarize/download", async (req, res) => {
   }
 });
 
-app.get("/api/stt/batch/diarize/:jobId", async (req, res) => {
+app.get("/api/stt/batch/:jobId", async (req, res) => {
   try {
-    const status = await getDiarizeJobStatus(req.params.jobId);
+    const status = await getBatchJobStatus(req.params.jobId);
     res.json(status);
   } catch (error) {
-    logger.error("Gnani batch diarize status failed", {
+    logger.error("Gnani batch status failed", {
       jobId: req.params.jobId,
       error: (error as Error).message,
     });
@@ -223,12 +221,12 @@ app.get("/api/stt/batch/diarize/:jobId", async (req, res) => {
   }
 });
 
-app.get("/api/stt/batch/diarize/:jobId/files", async (req, res) => {
+app.get("/api/stt/batch/:jobId/files", async (req, res) => {
   try {
-    const files = await getDiarizeJobFiles(req.params.jobId);
+    const files = await getBatchJobFiles(req.params.jobId);
     res.json({ data: files });
   } catch (error) {
-    logger.error("Gnani batch diarize files failed", {
+    logger.error("Gnani batch files failed", {
       jobId: req.params.jobId,
       error: (error as Error).message,
     });
@@ -236,12 +234,12 @@ app.get("/api/stt/batch/diarize/:jobId/files", async (req, res) => {
   }
 });
 
-app.post("/api/stt/batch/diarize/:jobId/cancel", async (req, res) => {
+app.post("/api/stt/batch/:jobId/cancel", async (req, res) => {
   try {
-    const job = await cancelDiarizeJob(req.params.jobId);
+    const job = await cancelBatchJob(req.params.jobId);
     res.json(job);
   } catch (error) {
-    logger.error("Gnani batch diarize cancel failed", {
+    logger.error("Gnani batch cancel failed", {
       jobId: req.params.jobId,
       error: (error as Error).message,
     });

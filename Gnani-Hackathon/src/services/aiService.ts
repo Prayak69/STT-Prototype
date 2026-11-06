@@ -34,7 +34,7 @@ export async function requestInsights(payload: {
   fileName: string;
   language: string;
   targetLanguage: TranslationLanguage;
-  segments: Array<{ index: number; speaker: string; timestamp: string; text: string }>;
+  segments: Array<{ index: number; timestamp: string; text: string }>;
 }): Promise<InsightsPayload> {
   const response = await fetch("/api/ai/analyze", {
     method: "POST",

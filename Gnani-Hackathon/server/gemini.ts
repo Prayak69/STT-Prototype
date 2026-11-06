@@ -3,7 +3,6 @@ import { logger } from "./logger";
 
 export interface AiSegmentInput {
   index: number;
-  speaker: string;
   timestamp: string;
   text: string;
 }
@@ -269,7 +268,7 @@ function promptTranscript(segments: AiSegmentInput[]): string {
   return segments
     .map(
       (segment) =>
-        `[#${segment.index}] ${segment.speaker} (${segment.timestamp}): ${segment.text}`,
+        `[#${segment.index}] (${segment.timestamp}): ${segment.text}`,
     )
     .join("\n");
 }
@@ -363,7 +362,7 @@ ${translationInstruction(targetLanguage)}
 - Preserve the meaning, tone, and clinical details. Do not add advice or commentary.
 - Do not merge, split, reorder, or omit segments.
 - If a segment is already in the target language, return it unchanged.
-- Return only the translated text for each segment — no speaker name or timestamp.
+- Return only the translated text for each segment — no timestamp.
 
 Return one JSON object with exactly two keys: "summary" and "translation".
 - "summary" must match the requested summary schema.

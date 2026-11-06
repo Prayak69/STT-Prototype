@@ -31,12 +31,10 @@ interface TranscriptRailProps {
   isProcessing: boolean;
   isRecording: boolean;
   sessionComplete: boolean;
-  clinicalLabels: boolean;
   settings: AppSettings;
   onSettingsChange: (patch: Partial<AppSettings>) => void;
   onClear: () => void;
   canClear: boolean;
-  speakerCount: number;
   aiStatus: AiStatus | null;
   tab: RailTab;
   onTabChange: (tab: RailTab) => void;
@@ -71,12 +69,10 @@ export function TranscriptRail({
   isProcessing,
   isRecording,
   sessionComplete,
-  clinicalLabels,
   settings,
   onSettingsChange,
   onClear,
   canClear,
-  speakerCount,
   aiStatus,
   tab,
   onTabChange,
@@ -84,7 +80,6 @@ export function TranscriptRail({
   const insights = useAiInsights({
     sourceKey,
     segments,
-    clinicalLabels,
     fileName: meta.fileName,
     language: meta.language,
     targetLanguage: settings.targetLanguage,
@@ -167,7 +162,6 @@ export function TranscriptRail({
             meta={meta}
             mode={mode}
             isProcessing={isProcessing}
-            clinicalLabels={clinicalLabels}
             canClear={canClear}
             onClear={onClear}
           />
@@ -177,7 +171,6 @@ export function TranscriptRail({
           <TranslationView
             segments={segments}
             meta={meta}
-            clinicalLabels={clinicalLabels}
             targetLanguage={settings.targetLanguage}
             onTargetChange={onTargetChange}
             translation={insights.translation}
@@ -211,8 +204,6 @@ export function TranscriptRail({
           <DetailsView
             meta={meta}
             segments={segments}
-            clinicalLabels={clinicalLabels}
-            speakerCount={speakerCount}
             status={meta.status}
             sourceLabel={meta.sourceLabel}
             translated={insights.translation !== null}

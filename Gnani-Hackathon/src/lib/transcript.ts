@@ -7,16 +7,11 @@ import type {
   TranslationResult,
 } from "./types";
 
-export type SpeakerTone = "doctor" | "patient" | "speaker";
-
 export interface ViewSegment {
   key: string;
-  speaker: string;
-  tone: SpeakerTone;
-  timeMs: number;
   text: string;
+  timeMs: number;
   language?: string;
-  speakerId?: number | null;
 }
 
 export interface TranscriptMeta {
@@ -28,43 +23,24 @@ export interface TranscriptMeta {
   sourceLabel: string;
 }
 
-export interface SpeakerOptions {
+export interface TranscriptOptions {
   clinicalLabels: boolean;
 }
 
-function toneForSpeaker(speaker: string): SpeakerTone {
-  const lower = speaker.toLowerCase();
-  if (lower.includes("doctor") || lower.includes("physician")) return "doctor";
-  if (lower.includes("patient")) return "patient";
-  return "speaker";
-}
-
-export function speakerLabel(
-  segment: TranscriptSegment,
-  _options: SpeakerOptions,
-): string {
-  if (segment.speakerId !== undefined && segment.speakerId !== null) {
-    return `Speaker ${segment.speakerId + 1}`;
-  }
-  return "Speaker";
+export function formatSegment(segment: TranscriptSegment): string {
+  const time = formatClock((segment.startTime ?? 0) * 1000);
+  return `[${time}] ${segment.text}`;
 }
 
 export function toViewSegments(
   segments: TranscriptSegment[],
-  options: SpeakerOptions,
 ): ViewSegment[] {
-  return segments.map((segment, index) => {
-    const speaker = speakerLabel(segment, options);
-    return {
-      key: segment.key || `segment-${index}`,
-      speaker,
-      tone: toneForSpeaker(speaker),
-      timeMs: Math.max(0, Math.round((segment.startTime ?? 0) * 1000)),
-      text: segment.text,
-      language: segment.language?.name,
-      speakerId: segment.speakerId,
-    };
-  });
+  return segments.map((segment, index) => ({
+    key: segment.key || `segment-${index}`,
+    text: segment.text,
+    timeMs: Math.max(0, Math.round((segment.startTime ?? 0) * 1000)),
+    language: segment.language?.name,
+  }));
 }
 
 export function countWords(segments: TranscriptSegment[]): number {
@@ -72,10 +48,6 @@ export function countWords(segments: TranscriptSegment[]): number {
     const words = segment.text.trim().split(/\s+/).filter(Boolean);
     return total + words.length;
   }, 0);
-}
-
-export function countSpeakers(segments: TranscriptSegment[], options: SpeakerOptions): number {
-  return new Set(segments.map((segment) => speakerLabel(segment, options))).size;
 }
 
 export function detectLanguage(segments: TranscriptSegment[]): string {
@@ -101,7 +73,6 @@ export function transcriptHeader(meta: TranscriptMeta): string[] {
 export function buildTranscriptText(
   segments: TranscriptSegment[],
   meta: TranscriptMeta,
-  options: SpeakerOptions,
 ): string {
   const lines = transcriptHeader(meta);
   lines.push("");
@@ -109,9 +80,7 @@ export function buildTranscriptText(
     lines.push("(No transcript segments yet.)");
   } else {
     for (const segment of segments) {
-      const speaker = speakerLabel(segment, options);
-      const time = formatClock((segment.startTime ?? 0) * 1000);
-      lines.push(`[${time}] ${speaker}: ${segment.text}`);
+      lines.push(formatSegment(segment));
     }
   }
   return lines.join("\n");
@@ -122,7 +91,6 @@ export function buildTranslationText(
   translation: TranslationResult,
   meta: TranscriptMeta,
   targetLabel: string,
-  options: SpeakerOptions,
 ): string {
   const byKey = new Map(translation.segments.map((entry) => [entry.key, entry.text]));
   const lines = [
@@ -141,9 +109,8 @@ export function buildTranslationText(
     original.forEach((segment, index) => {
       const key = segment.key || `segment-${index}`;
       const text = byKey.get(key) ?? segment.text;
-      const speaker = speakerLabel(segment, options);
       const time = formatClock((segment.startTime ?? 0) * 1000);
-      lines.push(`[${time}] ${speaker}: ${text}`);
+      lines.push(`[${time}] ${text}`);
     });
   }
   return lines.join("\n");
@@ -152,7 +119,6 @@ export function buildTranslationText(
 export function buildTranscriptJson(
   segments: TranscriptSegment[],
   meta: TranscriptMeta,
-  options: SpeakerOptions,
 ): string {
   return JSON.stringify(
     {
@@ -161,10 +127,9 @@ export function buildTranscriptJson(
       meta,
       segments: segments.map((segment, index) => ({
         index,
-        speaker: speakerLabel(segment, options),
+        text: segment.text,
         startSeconds: segment.startTime ?? 0,
         endSeconds: segment.endTime ?? null,
-        text: segment.text,
         language: segment.language?.name ?? null,
       })),
     },
@@ -177,7 +142,6 @@ export function buildTranslationJson(
   original: TranscriptSegment[],
   translation: TranslationResult,
   meta: TranscriptMeta,
-  options: SpeakerOptions,
 ): string {
   const byKey = new Map(translation.segments.map((entry) => [entry.key, entry.text]));
   return JSON.stringify(
@@ -189,11 +153,10 @@ export function buildTranslationJson(
       model: translation.model ?? null,
       generatedAt: translation.generatedAt,
       segments: original.map((segment, index) => ({
-        index,
-        speaker: speakerLabel(segment, options),
-        startSeconds: segment.startTime ?? 0,
         text: byKey.get(segment.key || `segment-${index}`) ?? segment.text,
         sourceText: segment.text,
+        startSeconds: segment.startTime ?? 0,
+        language: segment.language?.name ?? null,
       })),
     },
     null,

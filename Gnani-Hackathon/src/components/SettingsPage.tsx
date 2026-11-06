@@ -71,8 +71,7 @@ export function SettingsPage({
               Translation defaults
             </h2>
             <p className="mt-0.5 text-xs text-slate-500">
-              Choose the language used when a transcript is translated. Speaker labels and
-              timestamps are always preserved.
+              Choose the language used when a transcript is translated.
             </p>
           </div>
         </div>

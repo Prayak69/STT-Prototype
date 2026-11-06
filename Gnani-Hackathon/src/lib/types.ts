@@ -36,7 +36,6 @@ export interface SessionRecord {
 export interface AppSettings {
   targetLanguage: TranslationLanguage;
   autoTranslate: boolean;
-  clinicalLabels: boolean;
 }
 
 export interface AiStatus {

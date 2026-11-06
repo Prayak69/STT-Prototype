@@ -27,7 +27,6 @@ type AsyncStatus = "idle" | "loading" | "ready" | "error";
 interface TranslationViewProps {
   segments: TranscriptSegment[];
   meta: TranscriptMeta;
-  clinicalLabels: boolean;
   targetLanguage: TranslationLanguage;
   onTargetChange: (language: TranslationLanguage) => void;
   translation: TranslationResult | null;
@@ -44,7 +43,6 @@ const actionButton =
 export function TranslationView({
   segments,
   meta,
-  clinicalLabels,
   targetLanguage,
   onTargetChange,
   translation,
@@ -64,8 +62,6 @@ export function TranslationView({
     };
   }, []);
 
-  // Label the panel with the language actually shown, which can differ from
-  // the dropdown after the user switches targets without re-translating.
   const selectedLabel = translationLanguageLabel(targetLanguage);
   const targetLabel = translation
     ? translationLanguageLabel(translation.targetLanguage)
@@ -77,7 +73,7 @@ export function TranslationView({
     ? new Map(translation.segments.map((entry) => [entry.key, entry.text]))
     : null;
   const text = translation
-    ? buildTranslationText(segments, translation, meta, targetLabel, { clinicalLabels })
+    ? buildTranslationText(segments, translation, meta, targetLabel)
     : "";
   const stem = safeFileStem(meta.fileName);
   const isLoading = status === "loading";
@@ -175,7 +171,7 @@ export function TranslationView({
               onClick={() =>
                 downloadText(
                   `${stem}-translation-${translation.targetLanguage}.json`,
-                  buildTranslationJson(segments, translation, meta, { clinicalLabels }),
+                  buildTranslationJson(segments, translation, meta),
                   "application/json",
                 )
               }
@@ -234,7 +230,6 @@ export function TranslationView({
           segments={segments}
           isProcessing={false}
           mode="saved"
-          clinicalLabels={clinicalLabels}
           textByKey={textByKey}
           showOriginal={showOriginal}
         />
@@ -256,10 +251,10 @@ export function TranslationView({
           </p>
           <p className="mt-1 max-w-[32ch] text-xs leading-5 text-slate-400">
             {isLoading
-              ? "Gemini is keeping speakers and timestamps intact while translating each segment."
+              ? "Gemini keeps timestamps intact while translating each segment."
               : segments.length === 0
                 ? "Start a recording or upload a file first."
-                : `Create ${targetArticle} ${targetLabel} version of the transcript. Speaker labels, timestamps, and medication names are preserved.`}
+                : `Create ${targetArticle} ${targetLabel} version of the transcript.`}
           </p>
         </div>
       )}

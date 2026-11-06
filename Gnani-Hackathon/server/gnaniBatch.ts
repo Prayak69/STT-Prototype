@@ -17,7 +17,7 @@ function restBaseFromSttUrl(url: string): string {
 
 const GNANI_BASE = restBaseFromSttUrl(config.stt.url);
 
-interface DiarizeJob {
+interface BatchJob {
   job_id: string;
   status: string;
   message?: string;
@@ -53,7 +53,6 @@ interface TranscriptDocument {
     start_time: number;
     end_time: number;
     text: string;
-    speaker_id: number | null;
     confidence: number | null;
     language_detected: string | null;
   }>;
@@ -136,25 +135,24 @@ export function normalizeAudioFilename(name: string, buf: Uint8Array): string {
 }
 
 /**
- * Build the multipart form body for a diarization batch job. Callers pass a
+ * Build the multipart form body for a batch transcript job. Callers pass a
  * browser `File` or a Node.js `Buffer` + name + mime type.
  */
-export function buildDiarizeJobForm(
+export function buildBatchJobForm(
   fileData: File | { buffer: Buffer | ArrayBuffer; name: string; type?: string },
   options: {
     languageCode?: string;
-    numSpeakers?: number;
   } = {},
 ): FormData {
-  const { languageCode = "indic-auto", numSpeakers = 5 } = options;
+  const { languageCode = "indic-auto" } = options;
 
   const configJson = JSON.stringify({
     model: "prisma-v3.0",
     language_code: languageCode,
     format: "transcribe",
     mode: "transcribe",
-    with_diarization: true,
-    num_speakers: numSpeakers,
+    // Plain transcript only: no speaker labels.
+    with_diarization: false,
   });
 
   const form = new FormData();
@@ -176,13 +174,13 @@ export function buildDiarizeJobForm(
 }
 
 /**
- * Create a diarization batch job on Gnani. The file is uploaded directly to
- * Gnani (multipart/form-data) with `with_diarization: true`.
+ * Create a batch job on Gnani. The file is uploaded directly to Gnani
+ * (multipart/form-data).
  *
  * Gnani's direct-upload limit is 10 MB per file, so callers should reject
  * larger files before reaching this function.
  */
-export async function createDiarizeJob(formData: FormData): Promise<DiarizeJob> {
+export async function createBatchJob(formData: FormData): Promise<BatchJob> {
   const res = await gnaniFetch(`${GNANI_BASE}/stt/v3/batch/jobs`, {
     method: "POST",
     headers: batchHeaders(),
@@ -199,7 +197,7 @@ export async function createDiarizeJob(formData: FormData): Promise<DiarizeJob> 
     throw new Error(`Gnani batch create failed (${res.status}): ${detail}`);
   }
 
-  const body = (await res.json()) as DiarizeJob;
+  const body = (await res.json()) as BatchJob;
   logger.info("Gnani batch job created", { job_id: body.job_id, status: body.status });
   return body;
 }
@@ -207,7 +205,7 @@ export async function createDiarizeJob(formData: FormData): Promise<DiarizeJob> 
 /**
  * Start a created batch job.
  */
-export async function startDiarizeJob(jobId: string): Promise<DiarizeJob> {
+export async function startBatchJob(jobId: string): Promise<BatchJob> {
   const res = await gnaniFetch(`${GNANI_BASE}/stt/v3/batch/jobs/${encodeURIComponent(jobId)}/start`, {
     method: "POST",
     headers: batchHeaders(),
@@ -223,13 +221,13 @@ export async function startDiarizeJob(jobId: string): Promise<DiarizeJob> {
     throw new Error(`Gnani batch start failed (${res.status}): ${detail}`);
   }
 
-  return (await res.json()) as DiarizeJob;
+  return (await res.json()) as BatchJob;
 }
 
 /**
  * Poll job status. Returns the job status object.
  */
-export async function getDiarizeJobStatus(jobId: string): Promise<JobStatus> {
+export async function getBatchJobStatus(jobId: string): Promise<JobStatus> {
   const res = await gnaniFetch(
     `${GNANI_BASE}/stt/v3/batch/jobs/${encodeURIComponent(jobId)}`,
     {
@@ -254,7 +252,7 @@ export async function getDiarizeJobStatus(jobId: string): Promise<JobStatus> {
 /**
  * Cancel a running batch job (best effort).
  */
-export async function cancelDiarizeJob(jobId: string): Promise<DiarizeJob> {
+export async function cancelBatchJob(jobId: string): Promise<BatchJob> {
   const res = await gnaniFetch(`${GNANI_BASE}/stt/v3/batch/jobs/${encodeURIComponent(jobId)}/cancel`, {
     method: "POST",
     headers: { ...batchHeaders(), "content-type": "application/json" },
@@ -271,13 +269,13 @@ export async function cancelDiarizeJob(jobId: string): Promise<DiarizeJob> {
     throw new Error(`Gnani batch cancel failed (${res.status}): ${detail}`);
   }
 
-  return (await res.json()) as DiarizeJob;
+  return (await res.json()) as BatchJob;
 }
 
 /**
  * Get completed file results for a job, including transcript URLs.
  */
-export async function getDiarizeJobFiles(jobId: string): Promise<JobFile[]> {
+export async function getBatchJobFiles(jobId: string): Promise<JobFile[]> {
   const res = await gnaniFetch(
     `${GNANI_BASE}/stt/v3/batch/jobs/${encodeURIComponent(jobId)}/files?status=COMPLETED`,
     {
@@ -303,7 +301,7 @@ export async function getDiarizeJobFiles(jobId: string): Promise<JobFile[]> {
 /**
  * Download a single transcript document from a transcript_url.
  */
-export async function downloadDiarizeTranscript(transcriptUrl: string): Promise<TranscriptDocument> {
+export async function downloadBatchTranscript(transcriptUrl: string): Promise<TranscriptDocument> {
   const res = await fetch(transcriptUrl, {
     method: "GET",
   });

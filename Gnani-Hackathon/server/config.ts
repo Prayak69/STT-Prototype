@@ -33,18 +33,6 @@ export const config = {
     maxSpeechSec: 30,
   },
 
-  /**
-   * Local pyannote sidecar used only by the realtime microphone path.
-   * Gnani Batch already returns `speaker_id` and is not affected by this.
-   * See `diarizer_server.py` in this folder.
-   */
-  diarization: {
-    enabled: (process.env.DIARIZATION_ENABLED ?? "true").toLowerCase() !== "false",
-    url: process.env.DIARIZER_URL ?? "ws://127.0.0.1:8790",
-    /** 0 = let pyannote detect the speaker count automatically. */
-    numSpeakers: intFromEnv("DIARIZER_NUM_SPEAKERS", 0),
-  },
-
   limits: {
     /** Concurrent Gnani streams allowed per client IP. */
     sessionsPerIp: intFromEnv("MAX_SESSIONS_PER_IP", 2),

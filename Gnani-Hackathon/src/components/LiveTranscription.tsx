@@ -10,7 +10,6 @@ interface TranscriptListProps {
   segments: TranscriptSegment[];
   isProcessing: boolean;
   mode: ListMode;
-  clinicalLabels: boolean;
   emptyTitle?: string;
   emptyDescription?: string;
   processingLabel?: string;
@@ -19,26 +18,10 @@ interface TranscriptListProps {
   showOriginal?: boolean;
 }
 
-const TONE_STYLES = {
-  doctor: {
-    article: "border-indigo-100/80 bg-indigo-50/40",
-    badge: "bg-indigo-100 text-indigo-700 ring-indigo-200",
-  },
-  patient: {
-    article: "border-teal-100/80 bg-teal-50/35",
-    badge: "bg-teal-100 text-teal-700 ring-teal-200",
-  },
-  speaker: {
-    article: "border-slate-200/80 bg-slate-50/70",
-    badge: "bg-slate-200 text-slate-700 ring-slate-300",
-  },
-} as const;
-
 export function TranscriptList({
   segments,
   isProcessing,
   mode,
-  clinicalLabels,
   emptyTitle,
   emptyDescription,
   processingLabel,
@@ -52,7 +35,7 @@ export function TranscriptList({
   const [hasNewSegments, setHasNewSegments] = useState(false);
 
   const isLive = mode === "live" || mode === "batch";
-  const viewSegments = toViewSegments(segments, { clinicalLabels });
+  const viewSegments = toViewSegments(segments);
   const hasSegments = viewSegments.length > 0;
   const isRecording = mode === "live";
 
@@ -144,19 +127,13 @@ export function TranscriptList({
               const key = rawSegment.key || segment.key;
               const text = textByKey?.get(key) ?? segment.text;
               const secondary = textByKey && showOriginal ? segment.text : undefined;
-              const tone = TONE_STYLES[segment.tone];
 
               return (
                 <article
                   key={key}
-                  className={`rounded-xl border px-3 py-2.5 ${tone.article}`}
+                  className="rounded-xl border px-3 py-2.5 bg-slate-50/70"
                 >
                   <div className="flex items-center gap-2">
-                    <span
-                      className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ring-1 ring-inset ${tone.badge}`}
-                    >
-                      {segment.speaker}
-                    </span>
                     <span className="text-[10px] font-medium tabular-nums text-slate-400">
                       {formatClock(segment.timeMs)}
                     </span>

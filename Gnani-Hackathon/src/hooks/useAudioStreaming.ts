@@ -34,20 +34,10 @@ export interface TranscriptSegment {
   language: LanguageInfo | null;
   segmentIndex?: number;
   receivedAt: number;
-  /** Speaker label from batch diarization, if available. */
-  speakerId?: number | null;
-  /** Human-readable speaker label for saved records. */
-  speakerName?: string;
   /** Segment start time in seconds, relative to the start of the audio. */
   startTime?: number;
   /** Segment end time in seconds, relative to the start of the audio. */
   endTime?: number;
-}
-
-interface SpeakerUpdate {
-  segment_id?: string | number;
-  segment_index?: number;
-  speaker_id?: number;
 }
 
 interface ServerFrame {
@@ -59,12 +49,6 @@ interface ServerFrame {
   segment_id?: string | number;
   segment_index?: number;
   detected_language_code?: string;
-  /** Present when the server could label a transcript immediately. */
-  speaker_id?: number;
-  /** Late labels for transcripts that arrived before diarization caught up. */
-  updates?: SpeakerUpdate[];
-  /** Set on the last `speaker_update`, once no more labels will arrive. */
-  final?: boolean;
 }
 
 interface StopWaiter {
@@ -73,15 +57,8 @@ interface StopWaiter {
   hardTimer: number | null;
 }
 
-interface SpeakerWaiter {
-  resolve: () => void;
-  timer: number | null;
-}
-
 const SILENCE_FRAMES_BEFORE_COMMIT = 16; // ~512 ms of trailing silence
 const FINAL_TRANSCRIPT_TIMEOUT_MS = 4500;
-/** The server confirms the final labels before closing the session. */
-const FINAL_SPEAKER_TIMEOUT_MS = 5000;
 const FINAL_SETTLE_MS = 600;
 const COMMIT_FALLBACK_MS = 1600;
 const CONNECT_TIMEOUT_MS = 12000;
@@ -140,7 +117,6 @@ export function useAudioStreaming() {
   const durationTimerRef = useRef<number | null>(null);
   const connectTimerRef = useRef<number | null>(null);
   const stopWaiterRef = useRef<StopWaiter | null>(null);
-  const speakerWaiterRef = useRef<SpeakerWaiter | null>(null);
   const requestIdRef = useRef<string | null>(null);
   const seenSegmentKeysRef = useRef<Set<string>>(new Set());
 
@@ -196,28 +172,6 @@ export function useAudioStreaming() {
     [resolveStopWaiter],
   );
 
-  const resolveSpeakerWaiter = useCallback(() => {
-    const waiter = speakerWaiterRef.current;
-    if (!waiter) return;
-    speakerWaiterRef.current = null;
-    if (waiter.timer !== null) window.clearTimeout(waiter.timer);
-    waiter.resolve();
-  }, []);
-
-  /** Resolves when the server's final `speaker_update` arrives, or on timeout. */
-  const waitForFinalSpeakerLabels = useCallback(
-    (timeoutMs: number) =>
-      new Promise<void>((resolve) => {
-        const waiter: SpeakerWaiter = { resolve, timer: null };
-        waiter.timer = window.setTimeout(
-          () => resolveSpeakerWaiter(),
-          timeoutMs,
-        );
-        speakerWaiterRef.current = waiter;
-      }),
-    [resolveSpeakerWaiter],
-  );
-
   const scheduleFinalSettle = useCallback(
     (delayMs: number) => {
       const waiter = stopWaiterRef.current;
@@ -271,7 +225,6 @@ export function useAudioStreaming() {
   const finishStop = useCallback(() => {
     stopDurationTimer(true);
     resolveStopWaiter();
-    resolveSpeakerWaiter();
     disposeAudio();
     commitSentRef.current = false;
 
@@ -290,14 +243,13 @@ export function useAudioStreaming() {
     setIsProcessing(false);
     setSpeechActive(false);
     updatePhase("stopped");
-  }, [disposeAudio, resolveSpeakerWaiter, resolveStopWaiter, stopDurationTimer, updatePhase]);
+  }, [disposeAudio, resolveStopWaiter, stopDurationTimer, updatePhase]);
 
   const fail = useCallback(
     (message: string) => {
       closingRef.current = true;
       clearConnectTimer();
       resolveStopWaiter();
-      resolveSpeakerWaiter();
       stopDurationTimer(true);
       disposeAudio();
       commitSentRef.current = false;
@@ -318,7 +270,7 @@ export function useAudioStreaming() {
       setSpeechActive(false);
       updatePhase("error");
     },
-    [clearConnectTimer, disposeAudio, resolveSpeakerWaiter, resolveStopWaiter, stopDurationTimer, updatePhase],
+    [clearConnectTimer, disposeAudio, resolveStopWaiter, stopDurationTimer, updatePhase],
   );
 
   const appendTranscript = useCallback((frame: ServerFrame) => {
@@ -340,50 +292,14 @@ export function useAudioStreaming() {
       text,
       language: describeLanguage(frame.detected_language_code),
       segmentIndex: frame.segment_index,
-      speakerId: typeof frame.speaker_id === "number" ? frame.speaker_id : null,
       receivedAt: Date.now(),
       startTime: startedAtRef.current
         ? (Date.now() - startedAtRef.current) / 1000
         : 0,
     };
 
-    if (typeof frame.speaker_id === "number") {
-      console.info("[stt] transcript with speaker", {
-        key,
-        speakerId: frame.speaker_id,
-      });
-    }
-
     setSegments((previous) => [...previous, segment]);
     setSessionSegments((count) => count + 1);
-  }, []);
-
-  /** Attach late speaker labels sent by the realtime diarization sidecar. */
-  const applySpeakerUpdates = useCallback((updates: SpeakerUpdate[]) => {
-    if (updates.length === 0) return;
-    console.info("[stt] speaker_update", updates);
-
-    setSegments((previous) => {
-      let changed = false;
-      const next = previous.map((segment) => {
-        const match = updates.find((update) => {
-          if (update.segment_id !== undefined && update.segment_id !== null) {
-            return String(update.segment_id) === segment.key;
-          }
-          return (
-            update.segment_index !== undefined &&
-            update.segment_index === segment.segmentIndex
-          );
-        });
-
-        if (!match || typeof match.speaker_id !== "number") return segment;
-        if (segment.speakerId === match.speaker_id) return segment;
-        changed = true;
-        return { ...segment, speakerId: match.speaker_id };
-      });
-
-      return changed ? next : previous;
-    });
   }, []);
 
   const handleFrame = useCallback(
@@ -434,12 +350,6 @@ export function useAudioStreaming() {
           break;
         }
 
-        case "speaker_update": {
-          applySpeakerUpdates(frame.updates ?? []);
-          if (frame.final) resolveSpeakerWaiter();
-          break;
-        }
-
         case "error": {
           console.warn("[stt] server error:", frame.message ?? "(no message)");
           setIsProcessing(false);
@@ -461,7 +371,7 @@ export function useAudioStreaming() {
           break;
       }
     },
-    [appendTranscript, applySpeakerUpdates, clearConnectTimer, fail, resolveSpeakerWaiter, scheduleFinalSettle, startDurationTimer, updatePhase],
+    [appendTranscript, clearConnectTimer, fail, scheduleFinalSettle, startDurationTimer, updatePhase],
   );
 
   const setupAudio = useCallback(
@@ -733,10 +643,6 @@ export function useAudioStreaming() {
     // Register the waiter before flushing so a segment that VAD closes during
     // the trailing silence still counts as the final transcript.
     const finalTranscript = waitForFinalTranscript(FINAL_TRANSCRIPT_TIMEOUT_MS);
-    // After the final transcript the server asks the diarizer for one wider
-    // pass and closes the labels with a `final` marker. Wait for it so the tail
-    // of the consultation is not saved with a bare "Speaker" label.
-    const finalSpeakers = waitForFinalSpeakerLabels(FINAL_SPEAKER_TIMEOUT_MS);
 
     // Let the tail of the last word reach the VAD, then force the utterance
     // closed with a commit and wait for its transcript before disconnecting.
@@ -760,7 +666,6 @@ export function useAudioStreaming() {
     }
 
     await finalTranscript;
-    await finalSpeakers;
     finishStop();
   }, [
     disposeAudio,
@@ -769,7 +674,6 @@ export function useAudioStreaming() {
     scheduleFinalSettle,
     stopDurationTimer,
     updatePhase,
-    waitForFinalSpeakerLabels,
     waitForFinalTranscript,
   ]);
 
@@ -811,8 +715,6 @@ export function useAudioStreaming() {
         waiter.resolve();
       }
 
-      resolveSpeakerWaiter();
-
       disposeAudio();
 
       const ws = wsRef.current;
@@ -825,7 +727,7 @@ export function useAudioStreaming() {
         }
       }
     };
-  }, [disposeAudio, resolveSpeakerWaiter]);
+  }, [disposeAudio, stopWaiterRef]);
 
   return {
     state,
