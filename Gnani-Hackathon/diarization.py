@@ -32,6 +32,10 @@ class DiarizationResult:
     num_speakers: int = 0
     model_name: str = DEFAULT_MODEL
     engine: str = "pyannote.audio"
+    # One L2-normalised voice fingerprint per speaker label. pyannote computes
+    # these centroids as part of diarization, so reusing them costs nothing and
+    # lets the sidecar recognise the same voice across rolling windows.
+    speaker_embeddings: dict[str, np.ndarray] = field(default_factory=dict)
 
 
 def _env_token() -> Optional[str]:
@@ -168,6 +172,7 @@ class SpeakerDiarizer:
             speakers=speakers,
             num_speakers=len(speakers),
             model_name=self.model_name,
+            speaker_embeddings=_extract_embeddings(output),
         )
 
 
@@ -208,6 +213,37 @@ def _extract_segments(output) -> list[dict]:
 
     segments.sort(key=lambda item: (item["start"], item["end"]))
     return segments
+
+
+def _extract_embeddings(output) -> dict[str, np.ndarray]:
+    """L2-normalised voice fingerprint per speaker label, when available.
+
+    pyannote.audio >= 4 returns `speaker_embeddings` aligned with the labels of
+    `speaker_diarization`. Rows for extra speakers can be all zeros; those are
+    skipped.
+    """
+    centroids = getattr(output, "speaker_embeddings", None)
+    if centroids is None:
+        return {}
+
+    try:
+        rows = np.asarray(centroids, dtype=np.float32)
+    except (TypeError, ValueError):
+        return {}
+    if rows.ndim != 2 or rows.shape[0] == 0:
+        return {}
+
+    annotation = getattr(output, "speaker_diarization", None)
+    if annotation is None or not hasattr(annotation, "labels"):
+        return {}
+
+    embeddings: dict[str, np.ndarray] = {}
+    for label, row in zip(annotation.labels(), rows):
+        vector = np.asarray(row, dtype=np.float32).reshape(-1)
+        norm = float(np.linalg.norm(vector))
+        if np.isfinite(norm) and norm > 1e-6:
+            embeddings[str(label)] = vector / norm
+    return embeddings
 
 
 _DIARIZER: Optional[SpeakerDiarizer] = None

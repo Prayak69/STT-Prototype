@@ -249,18 +249,16 @@ export function attachSttProxy(server: HttpServer): { close: () => void } {
           continue;
         }
         const speakerId = displaySpeakerId(match.speaker);
-        if (final) {
-          pendingTranscripts.delete(key);
-          if (item.lastSpeaker === speakerId) continue;
-        } else if (match.exact) {
-          // A real turn now covers the segment: this is the final label.
-          pendingTranscripts.delete(key);
-        } else if (item.lastSpeaker === speakerId) {
-          // No better data yet; keep waiting without spamming the browser.
-          continue;
-        } else {
-          item.lastSpeaker = speakerId;
-        }
+        if (final) pendingTranscripts.delete(key);
+        if (item.lastSpeaker === speakerId) continue;
+        // Before the final confirmation only overwrite a label when a real turn
+        // covers the segment; a nearest-turn guess must not make badges flicker.
+        if (!final && !match.exact && item.lastSpeaker !== undefined) continue;
+
+        // Keep every transcript until the session ends. A later window (or the
+        // final confirmation) can correct a label that an early, partial window
+        // got wrong; deleting early would freeze that mistake into the record.
+        item.lastSpeaker = speakerId;
         updates.push({
           segment_id: item.segment_id,
           segment_index: item.segment_index,
@@ -285,11 +283,11 @@ export function attachSttProxy(server: HttpServer): { close: () => void } {
 
     /**
      * After the client commits, give Gnani time to deliver the last transcript
-     * and then ask the sidecar for one wider pass. Debounced, so several final
-     * segments are all captured before the final timeline is requested.
+     * and then confirm the final labels from the latest timeline. Debounced, so
+     * several final segments are all captured.
      */
     const FINAL_FLUSH_DELAY_MS = 900;
-    const FINAL_FLUSH_TIMEOUT_MS = 6000;
+    const FINAL_FLUSH_TIMEOUT_MS = 4000;
     let finalFlushTimer: ReturnType<typeof setTimeout> | null = null;
     let finalFlushStarted = false;
 
@@ -304,9 +302,9 @@ export function attachSttProxy(server: HttpServer): { close: () => void } {
 
       const ok = await diarization.flush(FINAL_FLUSH_TIMEOUT_MS);
       if (ok) {
-        log("final diarization timeline received");
+        log("final speaker labels confirmed");
       } else {
-        log("final diarization pass unavailable; using current timeline");
+        log("final speaker confirmation unavailable; using current timeline");
       }
       // Always release the browser, even when the sidecar timed out.
       emitSpeakerUpdates({ final: true });
@@ -406,9 +404,9 @@ export function attachSttProxy(server: HttpServer): { close: () => void } {
         frame.speaker_id = displayId;
       }
 
-      // Keep the segment pending unless a real turn covers it, so a later
-      // window can correct a provisional label (or fill in a missing one).
-      if ((match === null || !match.exact) && pendingTranscripts.size < 1000) {
+      // Remember every transcript interval, even when this window already
+      // labels it: a later window (or the final confirmation) can correct it.
+      if (pendingTranscripts.size < 1000) {
         pendingTranscripts.set(key, {
           segment_id: segmentId,
           segment_index: segmentIndex,

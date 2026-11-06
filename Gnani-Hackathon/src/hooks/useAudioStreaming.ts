@@ -80,8 +80,8 @@ interface SpeakerWaiter {
 
 const SILENCE_FRAMES_BEFORE_COMMIT = 16; // ~512 ms of trailing silence
 const FINAL_TRANSCRIPT_TIMEOUT_MS = 4500;
-/** The server asks the diarizer for one last pass before closing. */
-const FINAL_SPEAKER_TIMEOUT_MS = 9000;
+/** The server confirms the final labels before closing the session. */
+const FINAL_SPEAKER_TIMEOUT_MS = 5000;
 const FINAL_SETTLE_MS = 600;
 const COMMIT_FALLBACK_MS = 1600;
 const CONNECT_TIMEOUT_MS = 12000;

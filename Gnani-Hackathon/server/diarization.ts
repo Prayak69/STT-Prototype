@@ -37,8 +37,8 @@ export interface DiarizationSession {
     maxDistanceSeconds?: number,
   ): SpeakerMatch | null;
   /**
-   * Ask the sidecar for one final, wider diarization pass before the session
-   * closes. Resolves `true` when the final timeline arrived, `false` on
+   * Ask the sidecar to close the speaker timeline before the session ends.
+   * Resolves `true` when its `final: true` snapshot arrived, `false` on
    * timeout or when the sidecar is unavailable.
    */
   flush(timeoutMs?: number): Promise<boolean>;
@@ -278,7 +278,7 @@ export function createDiarizationSession(options: {
         flushTimer = setTimeout(() => settleFlush(false), timeoutMs);
         try {
           current.send(JSON.stringify({ type: "flush" }));
-          log("flush requested for final speaker pass");
+          log("flush requested for final speaker confirmation");
         } catch (error) {
           log("could not request final pass", { message: (error as Error).message });
           settleFlush(false);

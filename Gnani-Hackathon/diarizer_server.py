@@ -15,9 +15,9 @@ Node proxy -> sidecar:
   The frames must be the same frames sent to Gnani, in order.
   {"type":"sync","audio_ms":0} on (re)connect: absolute time of the first
   frame that follows, used to keep timestamps aligned after a reconnect.
-  {"type":"flush"} when the stream ends: run one last pass over the buffered
-  audio (up to FINAL_WINDOW_SECONDS) so the tail of the conversation is
-  labelled before the session closes.
+  {"type":"flush"} when the stream ends: answer with the latest known timeline
+  and `final: true`, without starting another pyannote pass (on CPU a single
+  window can take tens of seconds).
 
 Sidecar -> Node proxy (JSON):
   {"type":"ready","sample_rate":16000,"num_speakers":2}
@@ -84,10 +84,6 @@ MAX_AUDIO_SECONDS = 25 * 60
 # A window needs at least this much audio before the first run.
 MIN_START_SECONDS = 8.0
 
-# The final pass (on "flush") re-diarizes the whole buffered session, capped so
-# a long consultation cannot stall the shutdown for minutes on CPU.
-FINAL_WINDOW_SECONDS = 90.0
-
 # Two local labels are treated as the same speaker when at least this share of
 # their speech overlaps a speaker already seen in the timeline.
 SAME_SPEAKER_OVERLAP = 0.2
@@ -95,6 +91,25 @@ SAME_SPEAKER_OVERLAP = 0.2
 # Very short unrecognised bursts (coughs, noise, one-word interjections) reuse
 # the closest known speaker instead of creating a new Speaker N.
 MIN_NEW_SPEAKER_SECONDS = 1.0
+
+# Voice fingerprints (pyannote centroids) are compared with cosine similarity.
+# Rolling windows re-cluster from scratch, so a window that starts after a pause
+# may label the same voice with a new SPEAKER_XX and share no audio with the
+# previous timeline. Comparing voice fingerprints keeps one voice on one
+# global speaker id. Same-speaker cosine is usually > 0.7; different speakers
+# are usually < 0.35. Override with DIARIZER_VOICE_MATCH.
+try:
+    VOICE_MATCH_MIN_SIMILARITY = float(
+        os.environ.get("DIARIZER_VOICE_MATCH", "0.55")
+    )
+except ValueError:
+    VOICE_MATCH_MIN_SIMILARITY = 0.55
+
+# Fingerprints from < 1.2 s of speech are too noisy to identify a voice.
+VOICE_MIN_SPEECH_SECONDS = 1.2
+
+# How quickly a speaker fingerprint adapts to new audio (0 = never).
+VOICE_UPDATE_RATE = 0.3
 
 RUN_LOCK = asyncio.Lock()
 
@@ -136,6 +151,8 @@ class LiveSession:
         self._audio = bytearray()
         self._timeline: list[Turn] = []
         self._next_speaker = 1
+        # L2-normalised voice fingerprint per global speaker id.
+        self._centroids: dict[int, np.ndarray] = {}
         self._next_run_at = 0.0
         self._busy = False
         self._failed = False
@@ -166,7 +183,7 @@ class LiveSession:
 
     # -- diarization -----------------------------------------------------
 
-    def run(self, window_seconds: Optional[float] = None) -> Optional[list[dict]]:
+    def run(self) -> Optional[list[dict]]:
         if self._failed:
             return None
 
@@ -174,13 +191,7 @@ class LiveSession:
         if duration <= 0:
             return None
 
-        window = self.window_sec
-        if window_seconds is not None and window_seconds > 0:
-            # The final pass looks further back so the tail of the session is
-            # labelled with the full speaker context.
-            window = max(window, min(window_seconds, duration))
-
-        window_start = max(0.0, duration - window)
+        window_start = max(0.0, duration - self.window_sec)
         start_byte = int(window_start * BYTES_PER_SECOND)
         start_byte -= start_byte % BYTES_PER_SAMPLE
         window_start = start_byte / BYTES_PER_SECOND
@@ -206,7 +217,7 @@ class LiveSession:
                 }
                 for seg in result.segments
             ]
-            self._merge(window_start, segments)
+            self._merge(window_start, segments, result.speaker_embeddings)
         finally:
             self._busy = False
             # Schedule the next pass a full hop after this one *finished*, so a
@@ -242,12 +253,64 @@ class LiveSession:
 
     # -- label mapping ---------------------------------------------------
 
-    def _merge(self, window_start: float, segments: list[dict]) -> None:
+    def _remember_voice(
+        self,
+        speaker: int,
+        vector: Optional[np.ndarray],
+        speech: float,
+    ) -> None:
+        """Keep a running voice fingerprint for a global speaker id."""
+        if vector is None or speech < VOICE_MIN_SPEECH_SECONDS:
+            return
+
+        current = self._centroids.get(speaker)
+        if current is None:
+            self._centroids[speaker] = vector.copy()
+            return
+
+        blended = current * (1.0 - VOICE_UPDATE_RATE) + vector * VOICE_UPDATE_RATE
+        norm = float(np.linalg.norm(blended))
+        if np.isfinite(norm) and norm > 1e-6:
+            self._centroids[speaker] = blended / norm
+
+    def _best_voice_match(
+        self,
+        vector: Optional[np.ndarray],
+        start: float,
+        end: float,
+        taken: dict[int, list[tuple[float, float]]],
+    ) -> tuple[Optional[int], float]:
+        """Closest known voice, ignoring speakers talking at the same time."""
+        if vector is None:
+            return None, 0.0
+
+        best_speaker: Optional[int] = None
+        best_score = 0.0
+        for speaker, centroid in self._centroids.items():
+            simultaneous = any(
+                min(turn_end, end) - max(turn_start, start) > 0.2
+                for turn_start, turn_end in taken.get(speaker, ())
+            )
+            if simultaneous:
+                continue
+            score = float(np.dot(vector, centroid))
+            if np.isfinite(score) and score > best_score:
+                best_score = score
+                best_speaker = speaker
+        return best_speaker, best_score
+
+    def _merge(
+        self,
+        window_start: float,
+        segments: list[dict],
+        embeddings: Optional[dict[str, np.ndarray]] = None,
+    ) -> None:
         """Map window-local SPEAKER_XX labels onto stable global ids."""
         if not segments:
             self._timeline = self._clip(window_start)
             return
 
+        embeddings = embeddings or {}
         by_label: dict[str, list[dict]] = {}
         for seg in segments:
             by_label.setdefault(seg["speaker"], []).append(seg)
@@ -255,8 +318,18 @@ class LiveSession:
         mapping: dict[str, int] = {}
         max_speakers = self.num_speakers or 0
         recent_speaker = self._timeline[-1].speaker if self._timeline else None
+        # Spans already assigned in this pass, per global speaker, so two
+        # simultaneous labels are never merged by voice similarity.
+        taken: dict[int, list[tuple[float, float]]] = {}
 
         for label, label_segments in by_label.items():
+            start = min(float(seg["start"]) for seg in label_segments)
+            end = max(float(seg["end"]) for seg in label_segments)
+            speech = sum(
+                max(0.0, seg["end"] - seg["start"]) for seg in label_segments
+            ) or 1e-6
+            vector = embeddings.get(label)
+
             # Compare against the full timeline: the overlapping part of the
             # previous window is what links this label to a global speaker.
             overlap: dict[int, float] = {}
@@ -266,31 +339,41 @@ class LiveSession:
                     if shared > 0:
                         overlap[turn.speaker] = overlap.get(turn.speaker, 0.0) + shared
 
-            speech = sum(
-                max(0.0, seg["end"] - seg["start"]) for seg in label_segments
-            ) or 1e-6
             best = max(overlap, key=overlap.get) if overlap else None
+            overlap_ratio = overlap[best] / speech if best is not None else 0.0
+            voice_speaker, voice_score = self._best_voice_match(
+                vector, start, end, taken
+            )
 
-            if best is not None and overlap[best] / speech >= SAME_SPEAKER_OVERLAP:
+            if best is not None and overlap_ratio >= 0.5:
+                # Direct temporal evidence from the audio both windows share.
                 mapping[label] = best
-                continue
-
-            if speech < MIN_NEW_SPEAKER_SECONDS and (
+            elif (
+                voice_speaker is not None
+                and voice_score >= VOICE_MATCH_MIN_SIMILARITY
+            ):
+                # Same voice as an earlier window, even with a silence gap.
+                mapping[label] = voice_speaker
+            elif best is not None and overlap_ratio >= SAME_SPEAKER_OVERLAP:
+                mapping[label] = best
+            elif speech < MIN_NEW_SPEAKER_SECONDS and (
                 best is not None or recent_speaker is not None
             ):
                 mapping[label] = best if best is not None else recent_speaker
-                continue
-
-            if max_speakers and self._next_speaker > max_speakers:
+            elif max_speakers and self._next_speaker > max_speakers:
                 # Speaker budget exhausted (e.g. 2-person call): never invent
                 # "Speaker 3". Reuse the best match or the last active speaker.
                 mapping[label] = (
                     best if best is not None else (recent_speaker or 1)
                 )
-                continue
+            else:
+                mapping[label] = self._next_speaker
+                self._next_speaker += 1
 
-            mapping[label] = self._next_speaker
-            self._next_speaker += 1
+            speaker = mapping[label]
+            self._remember_voice(speaker, vector, speech)
+            taken.setdefault(speaker, []).append((start, end))
+            recent_speaker = speaker
 
         # Everything at or after the window is recomputed; keep the past.
         kept = self._clip(window_start)
@@ -341,7 +424,6 @@ async def handle_connection(connection, settings: argparse.Namespace) -> None:
 
     wake = asyncio.Event()
     failures = 0
-    flush_tasks: set[asyncio.Task] = set()
 
     async def worker() -> None:
         nonlocal failures
@@ -386,24 +468,6 @@ async def handle_connection(connection, settings: argparse.Namespace) -> None:
 
     task = asyncio.create_task(worker())
 
-    async def final_pass() -> None:
-        """One last, wider diarization pass; always answers with `final: true`."""
-        try:
-            async with RUN_LOCK:
-                timeline = await asyncio.to_thread(session.run, FINAL_WINDOW_SECONDS)
-        except Exception as exc:  # noqa: BLE001 - keep whatever we already have
-            log(f"{session_id}: final pass failed, using current timeline: {exc}")
-            timeline = session.snapshot()
-        if timeline is None:
-            timeline = session.snapshot()
-        try:
-            await connection.send(
-                json.dumps({"type": "timeline", "turns": timeline, "final": True})
-            )
-        except ConnectionClosed:
-            return
-        log(f"{session_id}: final timeline turns={len(timeline)}")
-
     try:
         async for message in connection:
             if isinstance(message, str):
@@ -416,11 +480,18 @@ async def handle_connection(connection, settings: argparse.Namespace) -> None:
                 if control.get("type") == "sync":
                     session.set_offset(control.get("audio_ms"))
                 elif control.get("type") == "flush":
-                    # Run the final pass in the background so the socket keeps
-                    # draining messages while pyannote works.
-                    flush_task = asyncio.create_task(final_pass())
-                    flush_tasks.add(flush_task)
-                    flush_task.add_done_callback(flush_tasks.discard)
+                    # The caller only needs the latest known timeline so it can
+                    # close the labels. Do not start another expensive pyannote
+                    # pass here: on CPU a full window can take tens of seconds.
+                    await connection.send(
+                        json.dumps(
+                            {
+                                "type": "timeline",
+                                "turns": session.snapshot(),
+                                "final": True,
+                            }
+                        )
+                    )
                 continue
             session.append(bytes(message))
             if session.wants_run():
@@ -429,8 +500,6 @@ async def handle_connection(connection, settings: argparse.Namespace) -> None:
         pass
     finally:
         task.cancel()
-        for flush_task in list(flush_tasks):
-            flush_task.cancel()
         log(f"{session_id}: closed after {round(session.duration, 1)}s")
 
 

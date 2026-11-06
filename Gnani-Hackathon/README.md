@@ -71,16 +71,25 @@ Browser ──PCM──► Node /ws/stt/realtime ──PCM──► Gnani (conne
 ```
 
 The sidecar re-diarizes the trailing window every few seconds and returns a
-stable `Speaker 1` / `Speaker 2` / `Speaker N` timeline with absolute timestamps. Node
-labels each transcript by time; when a transcript arrives before its window is
-covered, the label is sent a few seconds later as a `speaker_update`.
+stable `Speaker 1` / `Speaker 2` / `Speaker N` timeline with absolute timestamps.
+Node labels each transcript by time; when a transcript arrives before its window
+is covered, the label is sent a few seconds later as a `speaker_update`.
 
-When recording stops, the proxy waits for the last transcript and then asks the
-sidecar for one **final, wider pass** (up to 90 s of audio). That labels the tail
-of the consultation — the part the rolling 18 s window had not covered yet — and
-sends a closing `speaker_update` with `final: true` before the browser saves the
-session. Without that pass, a final utterance could be stored with a bare
-`Speaker` label.
+Rolling windows re-cluster from scratch, so a window that starts after a pause
+could give the same voice a new local label with no audio overlap with the
+previous timeline. To stop that, the sidecar also keeps the **voice fingerprint**
+(embedding) pyannote already computes for each speaker and reuses a global
+speaker id when the cosine similarity to a previously heard voice is high
+(`DIARIZER_VOICE_MATCH`, default `0.55`). That keeps one voice on one
+`Speaker N`, even across silence, and collapses a cluster that pyannote split
+inside a single window.
+
+When recording stops, Node waits for the last transcript, asks the sidecar for
+its latest timeline (marked `final: true`; this does **not** start another
+pyannote pass) and sends a closing `speaker_update` before the session is saved,
+so every segment gets a speaker, including the tail. Because all transcript
+intervals are kept for the whole session, the final timeline can also correct a
+label an early window got wrong.
 
 1. Accept the conditions on Hugging Face for **both**
    [`pyannote/speaker-diarization-3.1`](https://huggingface.co/pyannote/speaker-diarization-3.1)
@@ -104,13 +113,17 @@ session. Without that pass, a final utterance could be stored with a bare
 
 It listens on `ws://127.0.0.1:8790`. Options: `--num-speakers 0` (auto-detect, default; pass `2`, `3`, ... to force a count),
 `--window 18`, `--hop 4`, or the `DIARIZER_*` variables in `.env`.
+`DIARIZER_VOICE_MATCH` (default `0.55`) sets how similar two voice fingerprints
+must be before they are treated as the same speaker; raise it if two people are
+being merged, lower it if one person is still being split.
 
 A GPU is strongly recommended. On CPU an 18 s window may take longer than the
 4 s hop, so labels update more slowly — the sidecar never queues overlapping
-passes. The final pass at stop can also take a few seconds on CPU; the UI waits
-for it (with a timeout) before saving the session. Set `DIARIZATION_ENABLED=false`
-to run realtime without labels. If the sidecar is not running, realtime
-transcription still works; it simply shows no speaker badges.
+passes. Stopping does **not** wait for another pyannote pass: the final
+`speaker_update` is built from the latest timeline, so closing is immediate.
+Set `DIARIZATION_ENABLED=false` to run realtime without labels. If the sidecar
+is not running, realtime transcription still works; it simply shows no speaker
+badges.
 
 ---
 
