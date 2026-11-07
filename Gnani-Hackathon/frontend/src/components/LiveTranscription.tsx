@@ -149,6 +149,7 @@ export function TranscriptList({
               return (
                 <article
                   key={key}
+                  id={`transcript-segment-${key}`}
                   className={`rounded-xl border px-3 py-2.5 ${tone.article}`}
                 >
                   <div className="flex items-center gap-2">

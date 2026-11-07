@@ -1,12 +1,14 @@
 import { useEffect, useRef } from "react";
 import {
   AudioLines,
+  ClipboardList,
   FileAudio,
   Languages,
   ScrollText,
   Sparkles,
 } from "lucide-react";
 import { useAiInsights } from "../hooks/useAiInsights";
+import { useConsultationReport } from "../hooks/useConsultationReport";
 import type { TranscriptSegment } from "../hooks/useAudioStreaming";
 import type {
   AiStatus,
@@ -16,6 +18,7 @@ import type {
 } from "../lib/types";
 import type { TranscriptMeta } from "../lib/transcript";
 import { DetailsView } from "./DetailsView";
+import { ConsultationReportPanel } from "./ConsultationReport";
 import { SummaryView } from "./SummaryView";
 import { Tabs, type TabItem } from "./Tabs";
 import { TranscriptView } from "./TranscriptView";
@@ -46,6 +49,7 @@ const TABS: Array<TabItem<RailTab>> = [
   { id: "transcript", label: "Transcript", icon: ScrollText },
   { id: "translation", label: "Translate", icon: Languages },
   { id: "summary", label: "Summary", icon: Sparkles },
+  { id: "report", label: "Report", icon: ClipboardList },
   { id: "details", label: "Details", icon: FileAudio },
 ];
 
@@ -89,6 +93,25 @@ export function TranscriptRail({
     language: meta.language,
     targetLanguage: settings.targetLanguage,
   });
+
+  const reportSource =
+    mode === "batch" || (mode === "saved" && meta.sourceLabel === "Uploaded file")
+      ? "batch"
+      : "live";
+  const report = useConsultationReport(segments, reportSource);
+
+  const jumpToTranscriptSegment = (id: string) => {
+    onTabChange("transcript");
+    window.setTimeout(() => {
+      const element = document.getElementById(`transcript-segment-${id}`);
+      if (!element) return;
+      element.scrollIntoView({ behavior: "smooth", block: "center" });
+      element.classList.add("ring-2", "ring-indigo-300");
+      window.setTimeout(() => {
+        element.classList.remove("ring-2", "ring-indigo-300");
+      }, 1600);
+    }, 80);
+  };
 
   const autoRanRef = useRef<string | null>(null);
   const aiConfigured = aiStatus?.configured !== false;
@@ -205,6 +228,31 @@ export function TranscriptRail({
             aiConfigured={aiConfigured}
             hasSegments={segments.length > 0}
           />
+        )}
+
+        {tab === "report" && (
+          <div
+            className="min-h-0 flex-1 overflow-y-auto p-3"
+            id="panel-report"
+            role="tabpanel"
+            aria-labelledby="tab-report"
+          >
+            <ConsultationReportPanel
+              segments={segments}
+              report={report.report}
+              state={report.state}
+              error={report.error}
+              configured={report.configured}
+              availabilityError={report.availabilityError}
+              speakers={report.speakers}
+              roles={report.roles}
+              isStale={report.isStale}
+              onRoleChange={report.setRole}
+              onGenerate={report.generate}
+              onReset={report.reset}
+              onJumpToSegment={jumpToTranscriptSegment}
+            />
+          </div>
         )}
 
         {tab === "details" && (

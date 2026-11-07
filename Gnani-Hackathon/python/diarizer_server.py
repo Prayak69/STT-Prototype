@@ -24,11 +24,11 @@ Sidecar -> Node proxy (JSON):
 `speaker` is a stable integer id per connection (1, 2, ...), so the caller can
 render "Speaker 1" / "Speaker 2".
 
-Run (self-contained, everything inside this folder):
+Run from the Gnani-Hackathon project root:
     cd Gnani-Hackathon
     python -m venv .venv
-    .\\.venv\\Scripts\\python.exe -m pip install -r requirements.txt
-    .\\.venv\\Scripts\\python.exe diarizer_server.py
+    .\\.venv\\Scripts\\python.exe -m pip install -r python\\requirements.txt
+    .\\.venv\\Scripts\\python.exe python\\diarizer_server.py
 """
 from __future__ import annotations
 
@@ -47,13 +47,14 @@ import numpy as np
 from dotenv import load_dotenv
 
 APP_DIR = Path(__file__).resolve().parent
+PROJECT_DIR = APP_DIR.parent
 
 if str(APP_DIR) not in sys.path:
     sys.path.insert(0, str(APP_DIR))
 
-# Everything this sidecar needs (HF_TOKEN, DIARIZER_*) lives in this folder's
-# .env; it never reads the repository root.
-load_dotenv(APP_DIR / ".env")
+# Everything this sidecar needs (HF_TOKEN, DIARIZER_*) lives in the project
+# root .env (next to package.json and the frontend/backend folders).
+load_dotenv(PROJECT_DIR / ".env")
 
 from diarization import (  # noqa: E402
     SpeakerDiarizer,
@@ -65,7 +66,7 @@ try:
     from websockets.exceptions import ConnectionClosed
 except ImportError as exc:  # pragma: no cover - dependency guard
     raise SystemExit(
-        "websockets is not installed. Run: pip install -r requirements.txt"
+        "websockets is not installed. Run: pip install -r python\\requirements.txt"
     ) from exc
 
 SAMPLE_RATE = 16000
@@ -437,7 +438,7 @@ def main() -> None:
     status = diarization_status()
     if not status["installed"]:
         raise SystemExit(
-            "pyannote.audio is not installed. Run: pip install -r requirements.txt"
+            "pyannote.audio is not installed. Run: pip install -r python\\requirements.txt"
         )
     if not status["token_configured"]:
         raise SystemExit(

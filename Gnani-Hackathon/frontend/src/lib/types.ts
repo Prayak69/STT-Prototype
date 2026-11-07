@@ -2,7 +2,7 @@ import type { TranscriptSegment } from "../hooks/useAudioStreaming";
 
 export type PageKey = "dashboard" | "transcriptions" | "settings";
 
-export type RailTab = "transcript" | "translation" | "summary" | "details";
+export type RailTab = "transcript" | "translation" | "summary" | "report" | "details";
 
 export type TranslationLanguage = "en" | "hi" | "hinglish";
 

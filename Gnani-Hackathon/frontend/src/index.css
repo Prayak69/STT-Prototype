@@ -86,3 +86,28 @@
     animation: none;
   }
 }
+
+@media print {
+  body * {
+    visibility: hidden;
+  }
+
+  .consultation-report,
+  .consultation-report * {
+    visibility: visible;
+  }
+
+  .consultation-report {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    border: 0;
+    border-radius: 0;
+    box-shadow: none;
+  }
+
+  .consultation-report .no-print {
+    display: none !important;
+  }
+}

@@ -6,13 +6,16 @@
   "description": "VoxNote — clinical transcription, translation, and summaries powered by Gnani Prisma v3.0 and Google Gemini",
   "scripts": {
     "dev": "concurrently -k -n api,web -c magenta,cyan \"npm:dev:api\" \"npm:dev:web\"",
-    "dev:api": "tsx watch server/server.ts",
-    "dev:web": "vite",
+    "dev:api": "tsx watch backend/server.ts",
+    "dev:web": "vite --config frontend/vite.config.ts",
     "build": "node scripts/build.mjs --build",
-    "start": "cross-env NODE_ENV=production tsx server/server.ts",
+    "start": "cross-env NODE_ENV=production tsx backend/server.ts",
     "typecheck": "node scripts/build.mjs",
     "test:batch": "node scripts/test-batch.mjs",
-    "preview": "vite preview"
+    "test:medicines": "node --import tsx scripts/test-medicines.ts",
+    "test:translation": "node --import tsx scripts/test-translation.ts",
+    "test:report": "node --import tsx scripts/test-report.ts",
+    "preview": "vite preview --config frontend/vite.config.ts"
   },
   "engines": {
     "node": ">=20.19"

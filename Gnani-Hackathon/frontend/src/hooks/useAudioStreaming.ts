@@ -28,6 +28,8 @@ export type SessionState =
 
 export type ConnectionState = "idle" | "connecting" | "connected" | "error";
 
+export type SegmentTranslationState = "pending" | "done" | "error";
+
 export interface TranscriptSegment {
   key: string;
   text: string;
@@ -42,6 +44,12 @@ export interface TranscriptSegment {
   startTime?: number;
   /** Segment end time in seconds, relative to the start of the audio. */
   endTime?: number;
+  /** English translation, when requested. `text` always stays the raw transcript. */
+  translatedText?: string | null;
+  /** Translation lifecycle for this segment. */
+  translationState?: SegmentTranslationState;
+  /** Human-readable translation failure, if any. */
+  translationError?: string | null;
 }
 
 interface SpeakerUpdate {

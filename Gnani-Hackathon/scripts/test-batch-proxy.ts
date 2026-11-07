@@ -63,7 +63,7 @@ process.env.GNANI_API_KEY = "test-key";
 process.env.GNANI_STT_URL = `ws://127.0.0.1:${upstreamPort}`;
 process.env.MAX_SESSIONS_PER_IP = "10";
 
-const { attachSttProxy } = await import("../server/gnaniWebSocket.ts");
+const { attachSttProxy } = await import("../backend/gnaniWebSocket.ts");
 
 const server = createServer();
 const proxy = attachSttProxy(server);

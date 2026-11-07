@@ -1,9 +1,15 @@
 import { defineConfig, loadEnv } from "vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const frontendRoot = dirname(fileURLToPath(import.meta.url));
+const projectRoot = resolve(frontendRoot, "..");
 
 export default defineConfig(({ mode }) => {
-  const env = loadEnv(mode, process.cwd(), "");
+  // Shared .env lives at the project root, next to package.json.
+  const env = loadEnv(mode, projectRoot, "");
   const apiTarget = env.API_TARGET || "http://localhost:8787";
 
   const proxy = {
@@ -12,6 +18,9 @@ export default defineConfig(({ mode }) => {
   };
 
   return {
+    root: frontendRoot,
+    envDir: projectRoot,
+    cacheDir: join(projectRoot, "node_modules", ".vite"),
     plugins: [react(), tailwindcss()],
     server: {
       port: 5173,
@@ -22,7 +31,8 @@ export default defineConfig(({ mode }) => {
       proxy,
     },
     build: {
-      outDir: "dist",
+      outDir: join(projectRoot, "dist"),
+      emptyOutDir: true,
       sourcemap: false,
     },
   };

@@ -6,3 +6,8 @@ dist
 .DS_Store
 .vscode
 .idea
+
+# Python sidecar
+.venv/
+__pycache__/
+*.py[cod]
