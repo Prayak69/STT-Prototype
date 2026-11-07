@@ -1,14 +1,18 @@
 # VoxNote — Clinical transcription on Gnani Prisma v3.0
 
+<<<<<<< HEAD
 Real-time and batch, multilingual **speech-to-text with automatic speaker diarization**, in the browser, powered by **Gnani Prisma v3.0**.
+=======
+Real-time and batch, multilingual **speech-to-text**, a persistent side transcript, Gemini-powered **clinical summaries and translation**, and downloadable records — powered by **Gnani Prisma v3.0**.
+>>>>>>> origin/main
 
 Two independent pipelines, one app:
 
 | | Realtime | Batch (uploaded file) |
 | --- | --- | --- |
 | Input | Microphone | Audio file (≤ 10 MB) |
-| Endpoint | `WS /ws/stt/realtime` → Gnani realtime WebSocket | `POST /api/stt/batch/diarize` → Gnani Batch Jobs REST API |
-| Output | Live transcript, language per utterance, **`Speaker N`** from the local pyannote sidecar | Full transcript + **`speaker_id` per segment** (diarized by Gnani) + timestamps |
+| Endpoint | `WS /ws/stt/realtime` → Gnani realtime WebSocket | `POST /api/stt/batch` → Gnani Batch Jobs REST API |
+| Output | Live transcript, language per utterance | Full transcript + timestamps |
 | Latency | Sub-second per utterance | Minutes (async job, polled every 10 s) |
 | Languages | Auto-detected (`indic-auto`) | Auto-detected (`indic-auto`) |
 
@@ -20,11 +24,21 @@ Raw transcripts stay untouched; the VoxNote workspace adds an optional **English
 
 **Requirements:** Node.js **20.19+** (or 22.12+), a microphone (for realtime), and a Gnani API key.
 
+<<<<<<< HEAD
 1. Put your key in `.env` in this folder (`Gnani-Hackathon/.env` — keep it out of version control). Also put `HF_TOKEN` there for the pyannote sidecar, and a Gemini key if you want English translation and consultation reports:
 
    ```env
    GNANI_API_KEY=your-gnani-api-key
    HF_TOKEN=your-hugging-face-token
+=======
+1. Put your keys in `.env` in this folder (`Gnani-Hackathon/.env` — keep it out of version control):
+
+   ```env
+   GNANI_API_KEY=your-gnani-api-key
+   PORT=8787
+
+   # Optional: clinical summaries and transcript translation
+>>>>>>> origin/main
    GEMINI_API_KEY=your-gemini-api-key
    GEMINI_MODEL=gemini-3.5-flash
    PORT=8787
@@ -54,6 +68,7 @@ Open **http://localhost:8787** — Express serves the built frontend and hosts b
 
 > Do **not** open the HTML file directly (`file://`). `getUserMedia` requires a secure context: `localhost` or HTTPS.
 
+<<<<<<< HEAD
 ### Realtime speaker labels (pyannote sidecar)
 
 Gnani realtime returns text only — there is no `speaker_id` on the streaming
@@ -101,6 +116,8 @@ passes. Set `DIARIZATION_ENABLED=false` to run realtime without labels. If the
 sidecar is not running, realtime transcription still works; it simply shows no
 speaker badges.
 
+=======
+>>>>>>> origin/main
 ---
 
 ## Feature tour
@@ -109,18 +126,24 @@ speaker badges.
 
 - From the dashboard, click **Start recording** → your mic streams to Gnani through the secure proxy.
 - Each finished utterance appears with a **language badge** (Prisma detects the language per utterance — Indian English, Hindi, Tamil, Telugu, Bengali, Marathi, Gujarati, Kannada, Malayalam, Punjabi, including code-switching).
-- With the pyannote sidecar running, each utterance also gets a green **Speaker N** badge. Labels can arrive a few seconds after the text (see [Realtime speaker labels](#realtime-speaker-labels-pyannote-sidecar)).
 - Live waveform, recording timer, speech/processing indicators, connection status.
 - **Stop** finalizes gracefully: trailing silence → `commit` → wait for the last transcript → close, so the final sentence is never lost.
 
-### 2. Batch upload with speaker diarization
+### 2. Batch upload
 
+<<<<<<< HEAD
 1. From the dashboard, click **Upload audio** and choose a file → the app validates it and shows a **ready state**. Nothing is sent yet in this confirmed two-step flow.
 2. Click **Generate Transcript** → the file uploads to *your* server, which creates a Gnani **Batch STT job** with `with_diarization: true`.
 3. The panel tracks every stage — *Ready → Uploading → Starting job → Diarizing → Fetching transcripts → Complete* — with a progress bar. Status is polled every 10 s automatically.
 4. When done, segments appear with green **Speaker N** badges and `start – end` timestamps. Cancel stops local polling **and** asks Gnani to cancel the running job (best effort).
+=======
+1. Click **Upload Audio** and choose a file → the app validates it and shows a **ready state**. Nothing is sent yet in this confirmed two-step flow.
+2. Click **Generate Transcript** → the file uploads to *your* server, which creates a Gnani **Batch STT job** (plain transcription, no speaker labels).
+3. The panel tracks every stage — *Ready → Uploading → Starting job → Transcribing → Fetching transcript → Complete* — with a progress bar. Status is polled every 10 s automatically.
+4. When done, segments appear with `start – end` timestamps and text. Cancel stops local polling **and** asks Gnani to cancel the running job (best effort).
+>>>>>>> origin/main
 
-**You upload once, click once.** Diarization is configured entirely on the backend — the frontend has no language, model or speaker options.
+**You upload once, click once.** Transcription is configured entirely on the backend — the frontend has no language, model or speaker options.
 
 ### 3. Transcript rail
 
@@ -133,7 +156,28 @@ saved session records:
 - **Report** — the structured SOAP-style consultation draft. Assign speaker roles first (clinician / patient) so attribution is explicit; the model never guesses. Report items link back to the supporting transcript segments (source chips).
 - **Details** — file, language, duration, speaker count and model metadata.
 
+<<<<<<< HEAD
 Empty/error states explain what happened ("No speech detected", "No transcript produced"). Realtime and batch use **separate state**, so neither can clear or interrupt the other. Every finished session is also listed in **Session history** under Transcriptions.
+=======
+- **Translate** the full transcript into English, Hindi, or Hinglish. Timestamps and medication names are preserved; transcription and translation can be downloaded separately.
+- **Generate summary** produces a structured clinical note: chief complaint, symptoms, history, medications, assessment, plan, follow-up, and red flags. Missing details are marked “Not stated”.
+- Summaries and translations are generated server-side with Gemini, with model fallback and retry when the primary model is busy.
+- Both are produced by a **single Gemini request** per transcript: the Translate and Summary tabs stay separate in the UI, but opening either one reuses the same combined result instead of calling the model twice.
+- Summaries and translations are generated only from the session's own transcript.
+
+### 5. Session history
+
+- Finished live and upload sessions are saved into the current browser tab and listed with date, duration, language, and status.
+- History is in-memory only: refreshing the tab clears recorded sessions.
+
+### 6. Downloads
+
+| Content | Formats | Notes |
+| --- | --- | --- |
+| Transcript | TXT, JSON | Timestamps included |
+| Translation | TXT, JSON | Includes source text in JSON for auditing |
+| Summary | TXT, JSON | Structured clinical sections and model name |
+>>>>>>> origin/main
 
 ---
 
@@ -149,19 +193,19 @@ getUserMedia
     mono 16 kHz                                                  ◄── connected / speech_start /
     s16le, 32 ms                                                     processing / transcript (JSON)
 
-BATCH + DIARIZATION (REST jobs)
+BATCH (REST jobs)
 Browser                          Node server                        Gnani
 ───────                          ───────────                        ─────
-POST /api/stt/batch/diarize ──►  multipart forward ────────────►   POST /stt/v3/batch/jobs
-   (original file bytes)             config: model prisma-v3.0     → 201 { job_id, CREATED }
-                                     format transcribe
-                                     with_diarization true
+POST /api/stt/batch ──►  multipart forward ────────────►   POST /stt/v3/batch/jobs
+   (original file bytes)         config: model prisma-v3.0      → 201 { job_id, CREATED }
+                                  format transcribe
 POST /:id/start ─────────────►  ─────────────────────────────►   POST /stt/v3/batch/jobs/:id/start
 GET  /:id (every 10 s) ──────►  ───── polling ────────────────►  GET /stt/v3/batch/jobs/:id
 GET  /:id/files ─────────────►  ─────────────────────────────►  GET .../files?status=COMPLETED
 GET  /download?url=... ──────►  fetch transcript_url ─────────►  (presigned URL)
-                                  ◄── segments[] with speaker_id ─
+                                  ◄── segments[] ─
 
+<<<<<<< HEAD
 TRANSLATION (additive, both pipelines)
 Browser                          Node server                        Gemini
 ───────                          ───────────                        ──────
@@ -177,6 +221,14 @@ POST /api/report ────────────►  validate + chunk ─�
    { mode, segments: [...] }      Gemini key stays here             responseSchema: report
                                   ◄── structured JSON ───────────
    ◄── draft report; evidence ids point back to transcript segments
+=======
+CLINICAL AI (optional, after transcription)
+Browser                          Node server                        Google Gemini
+───────                          ───────────                        ─────────────
+POST /api/ai/analyze ─────────►  prompt + JSON schema ───────────►  generateContent
+                                   (summary + translation, one call)  ◄── structured JSON
+                                   ◄── normalized result
+>>>>>>> origin/main
 ```
 
 ### What the server does for batch (all transparent to the user)
@@ -185,7 +237,7 @@ POST /api/report ────────────►  validate + chunk ─�
 | --- | --- |
 | Wrong file extensions | The real container is **sniffed from magic bytes** (`OggS`, `RIFF/WAVE`, `ID3`, `ftyp`, `fLaC`, `AMR`, EBML…) and the filename is normalized before upload — WhatsApp voice notes that masquerade as `.mpeg` are fixed automatically. |
 | Gnani rate limits | Every Gnani REST call is wrapped in a retry: on **429** it retries up to **4 times** with backoff (honours `Retry-After`, otherwise 2 s → 4 s → 6 s → 8 s). Logged as `Gnani rate limited; retrying`. |
-| Slow processing | Diarization is an async job; the frontend polls `/status` every **10 s** (Gnani's recommended minimum) for up to **30 minutes**. |
+| Slow processing | Transcription is an async job; the frontend polls `/status` every **10 s** (Gnani's recommended minimum) for up to **30 minutes**. |
 | Cancel | `Cancel` stops polling and calls Gnani's `/cancel` endpoint so the job stops server-side too. |
 | Route safety | The literal `/download` route is registered **before** `/:jobId` routes so Express never parses `"download"` as a UUID. |
 | Secrets | `x-api-key-id` is attached **only** on the server; the browser talks to your server, never to Gnani. |
@@ -213,7 +265,6 @@ x-max-speech-s:     30    ← forces a transcript mid-monologue so results keep 
 | Max file size | **10 MB** (Gnani's direct-upload limit) |
 | Accepted extensions (browser picker) | `audio/*`, `.wav`, `.mp3`, `.m4a`, `.aac`, `.ogg`, `.oga`, `.opus`, `.flac`, `.webm`, `.mpeg`, `.mpga`, `.mp4` |
 | Accepted by Gnani | `.aac .amr .flac .m4a .mp3 .mp4 .ogg .opus .wav .webm` — mismatched extensions are auto-corrected via magic-byte sniffing |
-| Max speakers | Up to `num_speakers: 5` (Prisma v3.0 produces labels regardless; the flag only decides whether a diarization failure fails the file) |
 | Max audio duration | 4 h per file (Gnani), but 10 MB usually binds first — use MP3/OGG for long recordings |
 | Poll interval | 10 s; job polling gives up after ~30 minutes |
 | `transcript_url` expiry | 1 h — refunded automatically by re-fetching files |
@@ -226,8 +277,43 @@ x-max-speech-s:     30    ← forces a transcript mid-monologue so results keep 
 
 ```
 .
+<<<<<<< HEAD
 ├── frontend/                  # React + Vite app
 │   ├── index.html
+=======
+├── server/
+│   ├── server.ts              # Express app: static hosting, health, Gnani batch routes, AI routes
+│   ├── gnaniWebSocket.ts      # Realtime WS proxy
+│   ├── gnaniBatch.ts          # Gnani Batch Jobs REST client: create/start/poll/files/download/cancel
+│   ├── gemini.ts              # Gemini summaries/translation: prompts, schemas, fallback models
+│   ├── config.ts              # .env loading, Gnani + Gemini constants
+│   └── logger.ts              # Structured console logger
+├── src/
+│   ├── App.tsx                # Pages, session/history state, sticky rail + mobile drawer
+│   ├── components/
+│   │   ├── Sidebar.tsx, Header.tsx, DashboardPage.tsx, SettingsPage.tsx
+│   │   ├── TranscriptRail.tsx     # Side transcript panel with AI tabs
+│   │   ├── TranscriptView.tsx, TranslationView.tsx, SummaryView.tsx, DetailsView.tsx
+│   │   ├── HistoryTable.tsx       # Session list and filters
+│   │   ├── BatchPanel.tsx, RecordingPanel.tsx, StartActions.tsx
+│   │   ├── LiveTranscription.tsx  # Shared segment list with time badges
+│   │   └── AudioVisualizer.tsx, StatusBadge.tsx, ErrorBanner.tsx, Tabs.tsx
+│   ├── hooks/
+│   │   ├── useAudioStreaming.ts    # Realtime: capture → WS → segments (state machine)
+│   │   ├── useAiInsights.ts        # Summary/translation state and stale detection
+│   │   ├── useAiStatus.ts          # Server AI configuration
+│   │   └── useBatchProcessing.ts   # Legacy local-decode WS batch (unused by UI, kept for tests)
+│   ├── lib/
+│   │   ├── transcript.ts          # TXT/JSON builders, copy/download helpers
+│   │   ├── settings.ts            # Persisted UI preferences
+│   │   ├── types.ts               # Session, settings, summary, translation types
+│   │   ├── pcm.ts                 # Resampler, frame emitter, WS URL builder
+│   │   ├── batch.ts               # File validation, decode, downmix, resample (legacy path)
+│   │   └── languages.ts, format.ts, errors.ts
+│   ├── services/
+│   │   ├── transcriptionService.ts  # Batch transcription API client
+│   │   └── aiService.ts             # /api/ai/* client
+>>>>>>> origin/main
 │   ├── public/
 │   │   ├── pcm-processor.js       # AudioWorklet: mono 16 kHz s16le, 512-sample frames
 │   │   └── favicon.svg
@@ -307,6 +393,7 @@ x-max-speech-s:     30    ← forces a transcript mid-monologue so results keep 
 | `GET /api/health` | `{ status, model, language, sampleRate, configured, translation: { configured, model, targetLanguage }, report: { configured, model }, ai: { configured, provider, model } }` |
 | `WS /ws/stt/realtime` | Realtime browser audio (binary 1,024-byte PCM frames) + JSON control frames |
 | `WS /ws/stt/batch` *(legacy)* | Uploaded-file streaming via the realtime Gnani socket, with `batch_ack` flow control |
+<<<<<<< HEAD
 | `POST /api/stt/batch/diarize` | Multipart upload (`file`) → creates a diarization job → `{ job_id, status }` |
 | `POST /api/stt/batch/diarize/:jobId/start` | Starts the created job (`202 STARTING`) |
 | `GET /api/stt/batch/diarize/:jobId` | Job status: `CREATED/STARTING/QUEUED/IN_PROGRESS/COMPLETED/PARTIAL_FAILURE/FAILED/...` |
@@ -318,6 +405,14 @@ x-max-speech-s:     30    ← forces a transcript mid-monologue so results keep 
 | `POST /api/ai/analyze` | Gemini summary + translation in one call: `{ segments: [{ index, speaker, timestamp, text }], targetLanguage, language?, fileName? }` |
 | `POST /api/translate` | Additive English translation: `{ segments: [{ id, text, language? }], targetLanguage? }` → `{ ok, translations, model, targetLanguage }`; the raw transcript is never modified |
 | `POST /api/report` | Structured consultation report: `{ mode?, segments: [{ id, text, speaker?, role?, startTime?, endTime?, language? }] }` → `{ ok, report, model, generatedAt }`; every item carries evidence segment ids |
+=======
+| `POST /api/stt/batch` | Multipart upload (`file`) → creates a batch job → `{ job_id, status }` |
+| `POST /api/stt/batch/:jobId/start` | Starts the created job (`202 STARTING`) |
+| `GET /api/stt/batch/:jobId` | Job status: `CREATED/STARTING/QUEUED/IN_PROGRESS/COMPLETED/PARTIAL_FAILURE/FAILED/...` |
+| `GET /api/stt/batch/:jobId/files` | Completed files + `transcript_url`s |
+| `POST /api/stt/batch/:jobId/cancel` | Cancel the Gnani job |
+| `GET /api/stt/batch/download?url=…` | Proxies the presigned `transcript_url` and returns segment JSON |
+>>>>>>> origin/main
 
 Realtime WS accepts only exact **1,024-byte binary** frames and `{"type":"commit"}` text frames; batch WS sessions also emit `{"type":"batch_ack","frames":N}` for the client's in-flight window. Everything else is dropped and logged.
 
@@ -334,14 +429,13 @@ Realtime WS accepts only exact **1,024-byte binary** frames and `{"type":"commit
       "start_time": 0.0,
       "end_time": 0.71,
       "text": "hello",
-      "speaker_id": 1,
       "language_detected": null
     }
   ]
 }
 ```
 
-The UI renders one card per segment: language badge (when known), **Speaker N** badge, `start – end` time range, text.
+The UI renders one card per segment: language badge (when known), `start – end` time range, text.
 
 ### Medicine reference search
 
@@ -705,7 +799,10 @@ Server logs include session ids, frame counts, upstream close codes, rate-limit 
 
 ## Scope & current limitations
 
+<<<<<<< HEAD
 - **Realtime diarization doesn't exist at Gnani** — diarization is a Gnani Batch Jobs API feature only, so it is wired to the batch path (that's exactly what we did).
+=======
+>>>>>>> origin/main
 - Batch direct upload is capped at **10 MB**; files needing more require Gnani's presigned-upload flow (not implemented).
 - The legacy local-decode WebSocket batch path still exists (code + tests) but is not wired into the UI; the active batch path is the REST jobs flow above.
 - **Gnani Prisma does not translate** — English translation is a separate Gemini step and is optional; without `GEMINI_API_KEY` the app only transcribes.
@@ -723,5 +820,4 @@ Server logs include session ids, frame counts, upstream close codes, rate-limit 
 - Powered by **Gnani Prisma v3.0** — Speech-to-Text for Indian languages.
 - Batch API reference: <https://docs.gnani.ai/api/STTBatch/Introduction.md>
 - Realtime WS reference: <https://docs.gnani.ai/api/STT/stt-websocket.md>
-- Diarization use case: <https://docs.gnani.ai/api/use-cases/podcast-transcription.md>
 - Gnani API dashboard: <https://app.gnani.ai/voice>

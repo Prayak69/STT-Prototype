@@ -34,18 +34,6 @@ export const config = {
   },
 
   /**
-   * Local pyannote sidecar used only by the realtime microphone path.
-   * Gnani Batch already returns `speaker_id` and is not affected by this.
-   * See `python/diarizer_server.py`.
-   */
-  diarization: {
-    enabled: (process.env.DIARIZATION_ENABLED ?? "true").toLowerCase() !== "false",
-    url: process.env.DIARIZER_URL ?? "ws://127.0.0.1:8790",
-    /** Fixed speaker count for the recording (2 for a clinician/patient call). */
-    numSpeakers: intFromEnv("DIARIZER_NUM_SPEAKERS", 2),
-  },
-
-  /**
    * Google Gemini summary + translation used by the VoxNote dashboard.
    *
    * Shares the same key/base URL as the additive translation and report
@@ -54,7 +42,7 @@ export const config = {
    */
   ai: {
     apiKey: (process.env.GEMINI_API_KEY ?? "").trim(),
-    model: (process.env.GEMINI_MODEL ?? "gemini-3.5-flash").trim(),
+    model: (process.env.GEMINI_MODEL ?? "gemini-3.6-flash").trim(),
     fallbackModels: (
       process.env.GEMINI_FALLBACK_MODELS ??
       "gemini-3.8-flash,gemini-3.5-flash"

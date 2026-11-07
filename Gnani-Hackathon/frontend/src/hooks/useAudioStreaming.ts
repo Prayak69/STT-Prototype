@@ -34,12 +34,10 @@ export interface TranscriptSegment {
   key: string;
   text: string;
   language: LanguageInfo | null;
+  /** 0-based speaker index from batch diarization, null when not diarized. */
+  speakerId?: number | null;
   segmentIndex?: number;
   receivedAt: number;
-  /** Speaker label from batch diarization, if available. */
-  speakerId?: number | null;
-  /** Human-readable speaker label for saved records. */
-  speakerName?: string;
   /** Segment start time in seconds, relative to the start of the audio. */
   startTime?: number;
   /** Segment end time in seconds, relative to the start of the audio. */
@@ -52,12 +50,6 @@ export interface TranscriptSegment {
   translationError?: string | null;
 }
 
-interface SpeakerUpdate {
-  segment_id?: string | number;
-  segment_index?: number;
-  speaker_id?: number;
-}
-
 interface ServerFrame {
   type?: string;
   message?: string;
@@ -67,10 +59,6 @@ interface ServerFrame {
   segment_id?: string | number;
   segment_index?: number;
   detected_language_code?: string;
-  /** Present when the server could label a transcript immediately. */
-  speaker_id?: number;
-  /** Late labels for transcripts that arrived before diarization caught up. */
-  updates?: SpeakerUpdate[];
 }
 
 interface StopWaiter {
@@ -142,8 +130,84 @@ export function useAudioStreaming() {
   const requestIdRef = useRef<string | null>(null);
   const seenSegmentKeysRef = useRef<Set<string>>(new Set());
 
-  const updatePhase = useCallback((next: SessionState) => {
-    stateRef.current = next;
+  // Side recording (webm/opus or mp4) of the live session, used to run the
+  // Gnani batch (diarized) transcription once the conversation ends.
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const recorderChunksRef = useRef<Blob[]>([]);
+  const recordingBlobRef = useRef<{ blob: Blob; mimeType: string } | null>(null);
+
+  /** Begin capturing the mic stream so the session can be sent to the batch API. */
+  const beginRecording = useCallback(() => {
+    recorderChunksRef.current = [];
+    recordingBlobRef.current = null;
+    mediaRecorderRef.current = null;
+    const stream = mediaStreamRef.current;
+    if (!stream || typeof MediaRecorder === "undefined") return;
+
+    const mimeType =
+      ["audio/webm;codecs=opus", "audio/webm", "audio/mp4"].find((type) =>
+        MediaRecorder.isTypeSupported(type),
+      ) ?? "";
+    try {
+      const recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
+      mediaRecorderRef.current = recorder;
+      recorder.ondataavailable = (event) => {
+        if (event.data.size > 0) recorderChunksRef.current.push(event.data);
+      };
+      recorder.onstop = () => {
+        const payloadType = recorder.mimeType || mimeType || "audio/webm";
+        recordingBlobRef.current = {
+          blob: new Blob(recorderChunksRef.current, { type: payloadType }),
+          mimeType: payloadType,
+        };
+        recorderChunksRef.current = [];
+        mediaRecorderRef.current = null;
+      };
+      recorder.start(4096);
+    } catch {
+      mediaRecorderRef.current = null;
+    }
+  }, []);
+
+  /** Stop the side recording and wait for the blob to be assembled. */
+  const finalizeRecording = useCallback(
+    (): Promise<void> =>
+      new Promise<void>((resolve) => {
+        const recorder = mediaRecorderRef.current;
+        if (!recorder || recorder.state === "inactive") {
+          resolve();
+          return;
+        }
+        let settled = false;
+        const done = () => {
+          if (!settled) {
+            settled = true;
+            resolve();
+          }
+        };
+        recorder.addEventListener("stop", done, { once: true });
+        try {
+          recorder.stop();
+        } catch {
+          done();
+        }
+        window.setTimeout(done, 2000);
+      }),
+    [],
+  );
+
+  /** Consumes the finished recording as a File ready for the batch upload. */
+  const takeRecording = useCallback((): File | null => {
+    const recording = recordingBlobRef.current;
+    recordingBlobRef.current = null;
+    if (!recording || recording.blob.size === 0) return null;
+    const ext = recording.mimeType.includes("mp4") ? ".m4a" : ".webm";
+    return new File([recording.blob], `voxnote-session${ext}`, {
+      type: recording.blob.type,
+    });
+  }, []);
+
+  const updatePhase = useCallback((next: SessionState) => {    stateRef.current = next;
     setState(next);
   }, []);
 
@@ -314,50 +378,14 @@ export function useAudioStreaming() {
       text,
       language: describeLanguage(frame.detected_language_code),
       segmentIndex: frame.segment_index,
-      speakerId: typeof frame.speaker_id === "number" ? frame.speaker_id : null,
       receivedAt: Date.now(),
       startTime: startedAtRef.current
         ? (Date.now() - startedAtRef.current) / 1000
         : 0,
     };
 
-    if (typeof frame.speaker_id === "number") {
-      console.info("[stt] transcript with speaker", {
-        key,
-        speakerId: frame.speaker_id,
-      });
-    }
-
     setSegments((previous) => [...previous, segment]);
     setSessionSegments((count) => count + 1);
-  }, []);
-
-  /** Attach late speaker labels sent by the realtime diarization sidecar. */
-  const applySpeakerUpdates = useCallback((updates: SpeakerUpdate[]) => {
-    if (updates.length === 0) return;
-    console.info("[stt] speaker_update", updates);
-
-    setSegments((previous) => {
-      let changed = false;
-      const next = previous.map((segment) => {
-        const match = updates.find((update) => {
-          if (update.segment_id !== undefined && update.segment_id !== null) {
-            return String(update.segment_id) === segment.key;
-          }
-          return (
-            update.segment_index !== undefined &&
-            update.segment_index === segment.segmentIndex
-          );
-        });
-
-        if (!match || typeof match.speaker_id !== "number") return segment;
-        if (segment.speakerId === match.speaker_id) return segment;
-        changed = true;
-        return { ...segment, speakerId: match.speaker_id };
-      });
-
-      return changed ? next : previous;
-    });
   }, []);
 
   const handleFrame = useCallback(
@@ -408,11 +436,6 @@ export function useAudioStreaming() {
           break;
         }
 
-        case "speaker_update": {
-          applySpeakerUpdates(frame.updates ?? []);
-          break;
-        }
-
         case "error": {
           console.warn("[stt] server error:", frame.message ?? "(no message)");
           setIsProcessing(false);
@@ -434,7 +457,7 @@ export function useAudioStreaming() {
           break;
       }
     },
-    [appendTranscript, applySpeakerUpdates, clearConnectTimer, fail, scheduleFinalSettle, startDurationTimer, updatePhase],
+    [appendTranscript, clearConnectTimer, fail, scheduleFinalSettle, startDurationTimer, updatePhase],
   );
 
   const setupAudio = useCallback(
@@ -632,6 +655,10 @@ export function useAudioStreaming() {
       return;
     }
 
+    // Capture the conversation so the completed session can be re-run through
+    // the diarized Gnani batch API.
+    beginRecording();
+
     ws.binaryType = "arraybuffer";
     wsRef.current = ws;
 
@@ -684,7 +711,7 @@ export function useAudioStreaming() {
 
       fail(friendlySocketClose(event.code));
     };
-  }, [clearConnectTimer, fail, finishStop, handleFrame, resolveStopWaiter, updatePhase]);
+  }, [beginRecording, clearConnectTimer, fail, finishStop, handleFrame, resolveStopWaiter, updatePhase]);
 
   const stop = useCallback(async () => {
     const phase = stateRef.current;
@@ -695,6 +722,10 @@ export function useAudioStreaming() {
     setSpeechActive(false);
     recordingRef.current = false;
     stopDurationTimer(true);
+
+    // Finish the side recording first so the blob is ready when the
+    // session completes.
+    await finalizeRecording();
     disposeAudio();
 
     const ws = wsRef.current;
@@ -732,6 +763,7 @@ export function useAudioStreaming() {
     finishStop();
   }, [
     disposeAudio,
+    finalizeRecording,
     finishStop,
     resolveStopWaiter,
     scheduleFinalSettle,
@@ -790,7 +822,7 @@ export function useAudioStreaming() {
         }
       }
     };
-  }, [disposeAudio]);
+  }, [disposeAudio, stopWaiterRef]);
 
   return {
     state,
@@ -806,6 +838,7 @@ export function useAudioStreaming() {
     start,
     stop,
     reset,
+    takeRecording,
     clearTranscript,
     dismissError,
   };

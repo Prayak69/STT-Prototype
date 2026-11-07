@@ -6,7 +6,6 @@ import {
   ShieldCheck,
   Sparkles,
   Stethoscope,
-  Users,
 } from "lucide-react";
 import { TRANSLATION_LANGUAGES } from "../lib/settings";
 import type { AiStatus, AppSettings } from "../lib/types";
@@ -72,8 +71,7 @@ export function SettingsPage({
               Translation defaults
             </h2>
             <p className="mt-0.5 text-xs text-slate-500">
-              Choose the language used when a transcript is translated. Speaker labels and
-              timestamps are always preserved.
+              Choose the language used when a transcript is translated.
             </p>
           </div>
         </div>
@@ -135,13 +133,6 @@ export function SettingsPage({
             label="Translate automatically when a session ends"
             description="When a recording or upload finishes, the transcript is translated to the target language above. You can always re-translate manually."
             icon={Sparkles}
-          />
-          <Toggle
-            checked={settings.clinicalLabels}
-            onChange={(clinicalLabels) => onChange({ clinicalLabels })}
-            label="Use clinical speaker labels"
-            description="Label the first two detected speakers as Doctor and Patient instead of Speaker 1 and Speaker 2."
-            icon={Users}
           />
         </div>
       </section>

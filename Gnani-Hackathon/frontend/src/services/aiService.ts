@@ -1,8 +1,8 @@
 import type {
+  AiInsightRequestPayload,
   AiStatus,
   ConsultationSummary,
   InsightsPayload,
-  TranslationLanguage,
 } from "../lib/types";
 
 async function readError(response: Response, fallback: string): Promise<string> {
@@ -30,12 +30,7 @@ export async function fetchAiStatus(): Promise<AiStatus> {
  * One Gemini request returns both the clinical summary and the segment
  * translation. The UI still exposes them on separate tabs/buttons.
  */
-export async function requestInsights(payload: {
-  fileName: string;
-  language: string;
-  targetLanguage: TranslationLanguage;
-  segments: Array<{ index: number; speaker: string; timestamp: string; text: string }>;
-}): Promise<InsightsPayload> {
+export async function requestInsights(payload: AiInsightRequestPayload): Promise<InsightsPayload> {
   const response = await fetch("/api/ai/analyze", {
     method: "POST",
     headers: { "content-type": "application/json" },

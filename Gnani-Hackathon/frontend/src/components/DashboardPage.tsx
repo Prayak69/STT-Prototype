@@ -1,7 +1,7 @@
 import { ArrowRight, AudioLines, Files, Mic, Sparkles, UploadCloud } from "lucide-react";
-import type { BatchState } from "../hooks/useBatchProcessing";
 import type { AudioStreamingController } from "../hooks/useAudioStreaming";
-import type { BatchDiarizationController } from "../hooks/useBatchDiarization";
+import type { BatchJobController } from "../hooks/useBatchJob";
+import type { BatchState } from "../hooks/useBatchProcessing";
 import type { AiStatus, SessionRecord } from "../lib/types";
 import { BatchPanel } from "./BatchPanel";
 import { ErrorBanner } from "./ErrorBanner";
@@ -11,7 +11,7 @@ import { StartActions } from "./StartActions";
 
 interface DashboardPageProps {
   audio: AudioStreamingController;
-  diarize: BatchDiarizationController;
+  diarize: BatchJobController;
   sessions: SessionRecord[];
   activeId: string | null;
   onOpenRecord: (record: SessionRecord) => void;
@@ -69,17 +69,12 @@ export function DashboardPage({
   onViewAll,
   aiStatus,
 }: DashboardPageProps) {
-  const batchActive = diarize.state !== "idle";
+  // Upload flow takes over the dashboard while its batch job is active; the
+  // live-recording flow keeps the recording panel visible during diarization.
+  const uploadActive = diarize.state !== "idle" && diarize.fileInfo?.origin === "upload";
+  const batchPanelActive = diarize.state !== "idle";
   const realtimeVisible = audio.state !== "idle" && audio.state !== "error";
-  const showStartActions = !batchActive && (audio.state === "idle" || audio.state === "error");
-
-  const transcriptProcessing = batchActive
-    ? diarize.state === "uploading" ||
-      diarize.state === "created" ||
-      diarize.state === "starting" ||
-      diarize.state === "polling" ||
-      diarize.state === "downloading"
-    : audio.isProcessing;
+  const showStartActions = !uploadActive && (audio.state === "idle" || audio.state === "error");
 
   const connectionLabel =
     audio.state === "recording"
@@ -110,8 +105,8 @@ export function DashboardPage({
             Every consultation, documented.
           </h2>
           <p className="mt-2 max-w-xl text-[13px] leading-6 text-indigo-100 sm:text-sm">
-            Record live or upload audio. VoxNote transcribes in real time, separates speakers,
-            translates the conversation, and drafts a structured clinical note for review.
+            Record live or upload audio. VoxNote transcribes in real time, translates
+            the conversation, and drafts a structured clinical note for review.
           </p>
           <div className="mt-4 flex flex-wrap items-center gap-x-4 gap-y-1.5 text-[10px] font-medium text-indigo-100">
             <span className="inline-flex items-center gap-1.5">
@@ -120,7 +115,7 @@ export function DashboardPage({
             </span>
             <span className="inline-flex items-center gap-1.5">
               <UploadCloud className="h-3 w-3" aria-hidden="true" />
-              Batch upload with diarization
+              Batch upload
             </span>
             <span className="inline-flex items-center gap-1.5">
               <Sparkles className="h-3 w-3" aria-hidden="true" />
@@ -154,7 +149,7 @@ export function DashboardPage({
         />
       </div>
 
-      {!batchActive && audio.error && (
+      {!uploadActive && audio.error && (
         <ErrorBanner
           message={audio.error}
           onDismiss={audio.dismissError}
@@ -166,7 +161,7 @@ export function DashboardPage({
         <StartActions onRecord={onRecord} onFile={onFile} busy={audio.state === "requesting"} />
       )}
 
-      {!batchActive && realtimeVisible && (
+      {!uploadActive && realtimeVisible && (
         <RecordingPanel
           state={audio.state}
           elapsedMs={audio.elapsedMs}
@@ -184,7 +179,7 @@ export function DashboardPage({
         />
       )}
 
-      {batchActive && (
+      {batchPanelActive && (
         <BatchPanel
           state={diarize.state as BatchState}
           file={
@@ -193,9 +188,9 @@ export function DashboardPage({
                   name: diarize.fileInfo.name,
                   size: diarize.fileInfo.size,
                   type: diarize.fileInfo.type,
-                  durationMs: 0,
+                  durationMs: diarize.fileInfo.durationMs,
                   sourceSampleRate: 0,
-                  sourceChannels: 0,
+                  sourceChannels: diarize.fileInfo.origin === "upload" ? 0 : 1,
                 }
               : null
           }
@@ -203,7 +198,7 @@ export function DashboardPage({
           progress={diarize.progress}
           preparePercent={0}
           processedMs={0}
-          totalMs={0}
+          totalMs={diarize.fileInfo?.durationMs ?? 0}
           elapsedMs={0}
           error={diarize.error}
           canRetry={diarize.state === "error"}
@@ -212,12 +207,6 @@ export function DashboardPage({
           onReset={diarize.reset}
           onGenerate={diarize.generate}
         />
-      )}
-
-      {transcriptProcessing && (
-        <p className="text-[10px] text-slate-400">
-          Live transcript updates on the right as each utterance is finalised.
-        </p>
       )}
 
       <section>

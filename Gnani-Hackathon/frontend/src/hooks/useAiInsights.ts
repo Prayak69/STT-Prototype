@@ -6,7 +6,6 @@ import type {
   TranslationLanguage,
   TranslationResult,
 } from "../lib/types";
-import { speakerLabel } from "../lib/transcript";
 import { isConsultationSummary, requestInsights } from "../services/aiService";
 
 type AsyncStatus = "idle" | "loading" | "ready" | "error";
@@ -14,7 +13,6 @@ type AsyncStatus = "idle" | "loading" | "ready" | "error";
 interface UseAiInsightsOptions {
   sourceKey: string;
   segments: TranscriptSegment[];
-  clinicalLabels: boolean;
   fileName: string;
   language: string;
   targetLanguage: TranslationLanguage;
@@ -28,7 +26,6 @@ interface CombinedRun {
 export function useAiInsights({
   sourceKey,
   segments,
-  clinicalLabels,
   fileName,
   language,
   targetLanguage,
@@ -47,11 +44,7 @@ export function useAiInsights({
   const requestIdRef = useRef(0);
   const sourceRef = useRef(sourceKey);
   const fingerprintRef = useRef("");
-  // Remembers the transcript + language pair that already has a combined
-  // summary/translation result, so the two buttons never trigger two calls.
   const lastRunRef = useRef<CombinedRun | null>(null);
-  // Prevents a second click from starting a duplicate request while the first
-  // combined request is still in flight.
   const inFlightRef = useRef<CombinedRun | null>(null);
 
   const fingerprint = useMemo(
@@ -78,23 +71,16 @@ export function useAiInsights({
     setSummaryFingerprint(null);
   }, []);
 
-  // A new recording or upload starts with a clean AI panel.
   useEffect(() => {
     if (sourceRef.current === sourceKey) return;
     sourceRef.current = sourceKey;
     resetInsights();
   }, [sourceKey, resetInsights]);
 
-  // Clearing the transcript should also clear derived AI output.
   useEffect(() => {
     if (segments.length === 0) resetInsights();
   }, [segments.length, resetInsights]);
 
-  /**
-   * Generates the summary and the translation together in one Gemini call.
-   * Both the Translate and Summary buttons call this, so requesting the second
-   * view reuses the result of the first instead of hitting Gemini again.
-   */
   const runInsights = useCallback(
     async (languageToTranslate: TranslationLanguage) => {
       if (segments.length === 0) return;
@@ -138,9 +124,12 @@ export function useAiInsights({
           targetLanguage: languageToTranslate,
           segments: segments.map((segment, index) => ({
             index,
-            speaker: speakerLabel(segment, { clinicalLabels }),
             timestamp: formatClock((segment.startTime ?? 0) * 1000),
             text: segment.text,
+            speaker:
+              segment.speakerId != null
+                ? `Speaker ${Math.max(1, segment.speakerId)}`
+                : undefined,
           })),
         });
 
@@ -185,7 +174,7 @@ export function useAiInsights({
         if (inFlightRef.current === run) inFlightRef.current = null;
       }
     },
-    [clinicalLabels, fileName, language, segments],
+    [fileName, language, segments],
   );
 
   const translate = useCallback(
@@ -193,10 +182,10 @@ export function useAiInsights({
     [runInsights],
   );
 
-  const generateSummary = useCallback(
-    () => runInsights(targetLanguage),
-    [runInsights, targetLanguage],
-  );
+  const generateSummary = useCallback(() => runInsights(targetLanguage), [
+    runInsights,
+    targetLanguage,
+  ]);
 
   return {
     translation,

@@ -235,6 +235,18 @@ export function SummaryView({
             <Bullets items={summary.medications} />
           </Section>
 
+          {summary.medicationFlags && summary.medicationFlags.length > 0 && (
+            <section className="rounded-xl border border-amber-200 bg-amber-50/70 px-3 py-2.5">
+              <h3 className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wide text-amber-700">
+                <TriangleAlert className="h-3.5 w-3.5" aria-hidden="true" />
+                Possible wrong medication
+              </h3>
+              <div className="mt-1.5 text-[12px] leading-5 text-amber-900">
+                <Bullets items={summary.medicationFlags} />
+              </div>
+            </section>
+          )}
+
           <Section icon={ListChecks} title="Assessment">
             <p>{summary.assessment}</p>
           </Section>

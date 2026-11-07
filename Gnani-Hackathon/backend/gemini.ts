@@ -3,9 +3,10 @@ import { logger } from "./logger";
 
 export interface AiSegmentInput {
   index: number;
-  speaker: string;
   timestamp: string;
   text: string;
+  /** "Speaker 1" / "Speaker 2" when the transcript is diarized. */
+  speaker?: string;
 }
 
 export interface ConsultationSummary {
@@ -14,6 +15,8 @@ export interface ConsultationSummary {
   symptoms: string[];
   history: string;
   medications: string[];
+  /** Medicines that sound like no real drug and could not be confidently corrected. */
+  medicationFlags: string[];
   assessment: string;
   plan: string[];
   followUp: string;
@@ -59,6 +62,7 @@ const SUMMARY_SCHEMA = {
     symptoms: { type: "array", items: { type: "string" } },
     history: { type: "string" },
     medications: { type: "array", items: { type: "string" } },
+    medicationFlags: { type: "array", items: { type: "string" } },
     assessment: { type: "string" },
     plan: { type: "array", items: { type: "string" } },
     followUp: { type: "string" },
@@ -103,6 +107,10 @@ const INSIGHTS_SCHEMA = {
   },
   required: ["summary", "translation"],
 } as const;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 export function geminiStatus(): { configured: boolean; provider: string; model: string } {
   return {
@@ -244,21 +252,33 @@ async function callGemini(
   const models = Array.from(new Set([config.ai.model, ...config.ai.fallbackModels]));
   let lastError: GeminiError | null = null;
 
-  for (const [index, model] of models.entries()) {
-    try {
-      return await requestModel(model, prompt, schema, maxOutputTokens);
-    } catch (error) {
-      if (!(error instanceof GeminiError)) throw error;
-      lastError = error;
-
-      const hasFallback = index < models.length - 1;
-      if (!error.retryable || !hasFallback) throw error;
-
-      logger.warn("Gemini model unavailable, trying a fallback", {
-        model,
-        status: error.status,
-        error: error.message,
+  // Two passes: when every model answers "high demand" (429/503), wait once
+  // and try the whole list again before giving up.
+  for (let pass = 0; pass < 2; pass += 1) {
+    if (pass > 0) {
+      logger.info("Gemini busy on all models; retrying combined request", {
+        waitMs: 10_000,
+        error: lastError?.message,
       });
+      await sleep(10_000);
+    }
+
+    for (const [index, model] of models.entries()) {
+      try {
+        return await requestModel(model, prompt, schema, maxOutputTokens);
+      } catch (error) {
+        if (!(error instanceof GeminiError)) throw error;
+        lastError = error;
+
+        const hasFallback = index < models.length - 1;
+        if (!error.retryable || !hasFallback) throw error;
+
+        logger.warn("Gemini model unavailable, trying a fallback", {
+          model,
+          status: error.status,
+          error: error.message,
+        });
+      }
     }
   }
 
@@ -269,7 +289,7 @@ function promptTranscript(segments: AiSegmentInput[]): string {
   return segments
     .map(
       (segment) =>
-        `[#${segment.index}] ${segment.speaker} (${segment.timestamp}): ${segment.text}`,
+        `[#${segment.index}]${segment.speaker ? ` (${segment.speaker})` : ""} (${segment.timestamp}): ${segment.text}`,
     )
     .join("\n");
 }
@@ -294,6 +314,7 @@ function normalizeSummary(value: unknown): ConsultationSummary {
     symptoms: textArray(record.symptoms),
     history: textValue(record.history),
     medications: textArray(record.medications),
+    medicationFlags: textArray(record.medicationFlags),
     assessment: textValue(record.assessment),
     plan: textArray(record.plan),
     followUp: textValue(record.followUp),
@@ -304,11 +325,11 @@ function normalizeSummary(value: unknown): ConsultationSummary {
 function translationInstruction(targetLanguage: string): string {
   switch (targetLanguage) {
     case "hi":
-      return "Translate into natural conversational Hindi using Devanagari script. Keep medicine names, numbers, and units unchanged.";
+      return "Translate into natural conversational Hindi using Devanagari script. Keep medicine (brand) names, numbers, and units in their correct form; apply the medication-name rules from the summary instructions when a name was mistranscribed.";
     case "hinglish":
-      return "Translate into natural Hinglish: romanized Hindi mixed with everyday English medical terms, written in Latin script. Keep medicine names and numbers unchanged.";
+      return "Translate into natural Hinglish: romanized Hindi mixed with everyday English medical terms, written in Latin script. Keep medicine brand names, numbers, and units unchanged (after applying the medication-name correction rules).";
     default:
-      return "Translate into clear, natural English. Keep medicine names, numbers, and units unchanged.";
+      return "Translate into clear, natural English. Keep medicine brand names, numbers, and units unchanged (after applying the medication-name correction rules).";
   }
 }
 
@@ -357,13 +378,22 @@ export async function analyzeConsultation(
 - Keep the headline under 90 characters.
 - Keep each list item short (one line where possible).
 
+MEDICATION NAME RULES (apply to both the summary and the translation)
+Speech-to-text frequently mangles medication names — Indian and international brand names as well as generic molecules — into similar-sounding nonsense. Use your own broad drug knowledge; the examples are illustrative only, the rule applies to ANY medicine you can recognise.
+- If a medication name in the transcript is a phonetic/similar-sounding mistranscription of any real medicine (brand or generic), silently correct it to the proper name everywhere (summary AND translation). Examples only: "AC lock" → "Aciloc" (Ranitidine); "dowfimol" → "Dolo"; "axi-tromacil" → "Azithromycin"; "septran dp" → "Septran DS"; this same reasoning must extend to every drug you know.
+- Judge only by how the name is SPOKEN in the source language, not by its spelling. Expand well-known abbreviations and dose shorthand when stated.
+- Keep the corrected real name unchanged in the translation and every place it is mentioned, exactly as a correct brand/generic name.
+- If the spoken form does NOT sound like any real medicine you can identify with confidence, and it appears to be a mispronunciation of a DIFFERENT real medicine (e.g. "dolocitamol" said instead of "paracetamol" — a different/wrong drug), do NOT silently correct it: include it in "medicationFlags" prefixed with 'Wrong medication: ' (e.g. 'Wrong medication: "dolocitamol" — possibly meant "paracetamol"'). Keep the original as spoken in the summary body as well.
+- "medicationFlags" is only for medicines that were spoken wrongly or that match no real drug — not for ordinary misspellings you confidently corrected.
+
 2) SEGMENT TRANSLATION
 ${translationInstruction(targetLanguage)}
-- Translate every numbered segment exactly once.
+- Translate every numbered segment exactly once. If the segment carries a speaker label, preserve the speaker's turn so the translation reads like a conversation.
+- Apply the MEDICATION NAME RULES above when translating: any recognised medicine appears under its correct name in the target language without being transliterated back wrong; a name that matched no real drug stays as spoken and is left for the summary's flag.
 - Preserve the meaning, tone, and clinical details. Do not add advice or commentary.
 - Do not merge, split, reorder, or omit segments.
 - If a segment is already in the target language, return it unchanged.
-- Return only the translated text for each segment — no speaker name or timestamp.
+- Return only the translated text for each segment — no timestamp.
 
 Return one JSON object with exactly two keys: "summary" and "translation".
 - "summary" must match the requested summary schema.

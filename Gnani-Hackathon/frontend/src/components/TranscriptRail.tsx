@@ -34,12 +34,12 @@ interface TranscriptRailProps {
   isProcessing: boolean;
   isRecording: boolean;
   sessionComplete: boolean;
-  clinicalLabels: boolean;
+  /** False while the batch diarization is still running — AI must wait for it. */
+  aiReady: boolean;
   settings: AppSettings;
   onSettingsChange: (patch: Partial<AppSettings>) => void;
   onClear: () => void;
   canClear: boolean;
-  speakerCount: number;
   aiStatus: AiStatus | null;
   tab: RailTab;
   onTabChange: (tab: RailTab) => void;
@@ -75,12 +75,11 @@ export function TranscriptRail({
   isProcessing,
   isRecording,
   sessionComplete,
-  clinicalLabels,
+  aiReady,
   settings,
   onSettingsChange,
   onClear,
   canClear,
-  speakerCount,
   aiStatus,
   tab,
   onTabChange,
@@ -88,7 +87,6 @@ export function TranscriptRail({
   const insights = useAiInsights({
     sourceKey,
     segments,
-    clinicalLabels,
     fileName: meta.fileName,
     language: meta.language,
     targetLanguage: settings.targetLanguage,
@@ -120,12 +118,14 @@ export function TranscriptRail({
   // session finishes. Manual re-translation stays available at any time.
   useEffect(() => {
     if (!settings.autoTranslate || !sessionComplete) return;
+    if (!aiReady) return;
     if (mode === "saved") return;
     if (segments.length === 0) return;
     if (autoRanRef.current === sourceKey) return;
     autoRanRef.current = sourceKey;
     void insights.translate(settings.targetLanguage);
   }, [
+    aiReady,
     insights,
     mode,
     segments.length,
@@ -190,7 +190,6 @@ export function TranscriptRail({
             meta={meta}
             mode={mode}
             isProcessing={isProcessing}
-            clinicalLabels={clinicalLabels}
             canClear={canClear}
             onClear={onClear}
           />
@@ -200,7 +199,6 @@ export function TranscriptRail({
           <TranslationView
             segments={segments}
             meta={meta}
-            clinicalLabels={clinicalLabels}
             targetLanguage={settings.targetLanguage}
             onTargetChange={onTargetChange}
             translation={insights.translation}
@@ -259,8 +257,6 @@ export function TranscriptRail({
           <DetailsView
             meta={meta}
             segments={segments}
-            clinicalLabels={clinicalLabels}
-            speakerCount={speakerCount}
             status={meta.status}
             sourceLabel={meta.sourceLabel}
             translated={insights.translation !== null}

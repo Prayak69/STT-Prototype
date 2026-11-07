@@ -6,28 +6,30 @@
  * realtime/batch hooks can be swapped for a different provider later.
  */
 
-export interface DiarizationJob {
+export interface BatchJob {
   job_id: string;
   status: string;
 }
 
-export interface DiarizationJobStatus {
+export interface BatchJobStatus {
   job_id: string;
   status: string;
   progress?: { completed_files: number; total_files: number };
   cancel_reason?: string;
 }
 
-export interface DiarizationFile {
+export interface BatchFile {
   file_id: string;
   original_path: string;
   transcript_url: string | null;
   language_code?: string;
   duration_seconds?: number;
   status: string;
+  /** Gnani's per-file failure reason, present when status is FAILED. */
+  error_message?: string | null;
 }
 
-export interface DiarizationTranscript {
+export interface BatchTranscript {
   full_transcript: string;
   language_code?: string;
   language_detected?: string;
@@ -37,8 +39,10 @@ export interface DiarizationTranscript {
     start_time: number;
     end_time: number;
     text: string;
-    speaker_id: number | null;
+    confidence: number | null;
     language_detected: string | null;
+    /** Present when the job was created with ?diarize=true. */
+    speaker_id?: number | null;
   }>;
 }
 
@@ -51,11 +55,15 @@ async function readError(response: Response, fallback: string): Promise<string> 
   }
 }
 
-export async function createDiarizationJob(file: File): Promise<DiarizationJob> {
+export async function createBatchJob(
+  file: File,
+  options: { diarize?: boolean } = {},
+): Promise<BatchJob> {
   const form = new FormData();
   form.append("file", file);
 
-  const response = await fetch("/api/stt/batch/diarize", {
+  const url = options.diarize ? "/api/stt/batch?diarize=true" : "/api/stt/batch";
+  const response = await fetch(url, {
     method: "POST",
     body: form,
   });
@@ -64,12 +72,12 @@ export async function createDiarizationJob(file: File): Promise<DiarizationJob> 
     throw new Error(await readError(response, "Failed to create the transcription job."));
   }
 
-  return (await response.json()) as DiarizationJob;
+  return (await response.json()) as BatchJob;
 }
 
-export async function startDiarizationJob(jobId: string): Promise<DiarizationJob> {
+export async function startBatchJob(jobId: string): Promise<BatchJob> {
   const response = await fetch(
-    `/api/stt/batch/diarize/${encodeURIComponent(jobId)}/start`,
+    `/api/stt/batch/${encodeURIComponent(jobId)}/start`,
     { method: "POST" },
   );
 
@@ -77,50 +85,54 @@ export async function startDiarizationJob(jobId: string): Promise<DiarizationJob
     throw new Error(await readError(response, "Failed to start the transcription job."));
   }
 
-  return (await response.json()) as DiarizationJob;
+  return (await response.json()) as BatchJob;
 }
 
-export async function getDiarizationJobStatus(
+export async function getBatchJobStatus(
   jobId: string,
-): Promise<DiarizationJobStatus> {
-  const response = await fetch(`/api/stt/batch/diarize/${encodeURIComponent(jobId)}`);
+): Promise<BatchJobStatus> {
+  const response = await fetch(`/api/stt/batch/${encodeURIComponent(jobId)}`);
 
   if (!response.ok) {
     throw new Error(await readError(response, "Failed to check the transcription job."));
   }
 
-  return (await response.json()) as DiarizationJobStatus;
+  return (await response.json()) as BatchJobStatus;
 }
 
-export async function getDiarizationFiles(jobId: string): Promise<DiarizationFile[]> {
+export async function getBatchJobFiles(
+  jobId: string,
+  status?: string,
+): Promise<BatchFile[]> {
+  const filter = status && status !== "ALL" ? `?status=${encodeURIComponent(status)}` : "";
   const response = await fetch(
-    `/api/stt/batch/diarize/${encodeURIComponent(jobId)}/files?status=COMPLETED`,
+    `/api/stt/batch/${encodeURIComponent(jobId)}/files${filter}`,
   );
 
   if (!response.ok) {
     throw new Error(await readError(response, "Failed to fetch the transcript files."));
   }
 
-  const body = (await response.json()) as { data: DiarizationFile[] };
+  const body = (await response.json()) as { data: BatchFile[] };
   return body.data ?? [];
 }
 
-export async function downloadDiarizationTranscript(
+export async function downloadBatchTranscript(
   transcriptUrl: string,
-): Promise<DiarizationTranscript> {
+): Promise<BatchTranscript> {
   const response = await fetch(
-    `/api/stt/batch/diarize/download?url=${encodeURIComponent(transcriptUrl)}`,
+    `/api/stt/batch/download?url=${encodeURIComponent(transcriptUrl)}`,
   );
 
   if (!response.ok) {
     throw new Error(await readError(response, "Failed to download the transcript."));
   }
 
-  return (await response.json()) as DiarizationTranscript;
+  return (await response.json()) as BatchTranscript;
 }
 
-export async function cancelDiarizationJob(jobId: string): Promise<void> {
-  await fetch(`/api/stt/batch/diarize/${encodeURIComponent(jobId)}/cancel`, {
+export async function cancelBatchJob(jobId: string): Promise<void> {
+  await fetch(`/api/stt/batch/${encodeURIComponent(jobId)}/cancel`, {
     method: "POST",
   }).catch(() => undefined);
 }

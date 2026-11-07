@@ -2,16 +2,16 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { BatchInputError, validateBatchFile } from "../lib/batch";
 import { describeLanguage } from "../lib/languages";
 import {
-  cancelDiarizationJob,
-  createDiarizationJob,
-  downloadDiarizationTranscript,
-  getDiarizationFiles,
-  getDiarizationJobStatus,
-  startDiarizationJob,
+  cancelBatchJob,
+  createBatchJob,
+  downloadBatchTranscript,
+  getBatchJobFiles,
+  getBatchJobStatus,
+  startBatchJob,
 } from "../services/transcriptionService";
 import type { TranscriptSegment } from "./useAudioStreaming";
 
-export type DiarizationState =
+export type BatchJobState =
   | "idle"
   | "selected"
   | "uploading"
@@ -22,10 +22,18 @@ export type DiarizationState =
   | "complete"
   | "error";
 
-interface DiarizeFileInfo {
+export interface BatchOrigin {
+  origin: "live" | "upload";
+  durationMs: number;
+}
+
+export interface BatchFileInfo {
   name: string;
   size: number;
   type: string;
+  /** "live" when the audio was recorded in this tab, "upload" for files. */
+  origin: "live" | "upload";
+  durationMs: number;
 }
 
 const POLL_INTERVAL_MS = 10_000; // Gnani recommends >= 10s between polls
@@ -34,19 +42,17 @@ const MAX_POLL_ATTEMPTS = 180; // ~30 minutes max
 const MAX_FILE_BYTES = 10 * 1024 * 1024;
 
 /**
- * Hook for Gnani Batch STT with speaker diarization.
+ * Hook for the Gnani Batch STT REST flow.
  *
- * Flow: upload file → create job → start → poll status → fetch transcripts
- * → download segment-level results with speaker_id labels.
- *
- * The GNANI_API_KEY never reaches the browser; all Gnani calls are proxied
- * through the server at /api/stt/batch/diarize/*.
+ * Flow: file -> create job (server adds x-api-key-id) -> start -> poll status
+ * -> download segment results. Every job requests diarization, so finished
+ * segments carry speaker_id labels.
  */
-export function useBatchDiarization() {
-  const [state, setState] = useState<DiarizationState>("idle");
+export function useBatchJob() {
+  const [state, setState] = useState<BatchJobState>("idle");
   const [error, setError] = useState<string | null>(null);
   const [segments, setSegments] = useState<TranscriptSegment[]>([]);
-  const [fileInfo, setFileInfo] = useState<DiarizeFileInfo | null>(null);
+  const [fileInfo, setFileInfo] = useState<BatchFileInfo | null>(null);
   const [progress, setProgress] = useState(0);
   const [fullTranscript, setFullTranscript] = useState("");
   const [jobId, setJobId] = useState<string | null>(null);
@@ -84,7 +90,8 @@ export function useBatchDiarization() {
     [stopPolling],
   );
 
-  const select = useCallback((file: File) => {
+  /** Stage a file without starting transcription. */
+  const select = useCallback((file: File, origin: BatchOrigin) => {
     stopPolling();
     cancelRef.current = false;
     setError(null);
@@ -114,58 +121,29 @@ export function useBatchDiarization() {
       name: file.name,
       size: file.size,
       type: file.type,
+      origin: origin.origin,
+      durationMs: origin.durationMs,
     });
     setState("selected");
   }, [clearSegments, stopPolling]);
 
-  /** Starts the diarization flow on the previously selected file. */
-  // generate is defined after run below (run must exist first).
-
-  /**
-   * Uploads the file and creates a diarization job on the server proxy.
-   */
-  const createJob = useCallback(
-    async (file: File) => {
-      setState("uploading");
-      setProgress(10);
-
-      const job = await createDiarizationJob(file);
-      setJobId(job.job_id);
-      jobIdRef.current = job.job_id;
-      setProgress(25);
-      setState("created");
-      return job;
-    },
-    [],
-  );
-
-  const startJob = useCallback(async (jobId: string) => {
-    setState("starting");
-    const job = await startDiarizationJob(jobId);
-    setProgress(40);
-    setState("polling");
-    return job;
-  }, []);
-
-  const pollStatus = useCallback(async (jobId: string) => {
-    return getDiarizationJobStatus(jobId);
-  }, []);
-
-  const fetchFiles = useCallback(async (jobId: string) => {
-    return getDiarizationFiles(jobId);
-  }, []);
-
-  const downloadTranscript = useCallback(async (url: string) => {
-    return downloadDiarizationTranscript(url);
-  }, []);
-
   const run = useCallback(
-    async (file: File) => {
-      select(file);
+    async (file: File, origin: BatchOrigin) => {
+      select(file, origin);
 
       try {
-        const job = await createJob(file);
-        await startJob(job.job_id);
+        setState("uploading");
+        setProgress(10);
+        const job = await createBatchJob(file, { diarize: true });
+        setJobId(job.job_id);
+        jobIdRef.current = job.job_id;
+        setProgress(25);
+        setState("created");
+
+        setState("starting");
+        await startBatchJob(job.job_id);
+        setProgress(40);
+        setState("polling");
 
         pollAttemptsRef.current = 0;
         pollTimerRef.current = window.setInterval(async () => {
@@ -177,12 +155,12 @@ export function useBatchDiarization() {
           pollAttemptsRef.current += 1;
           if (pollAttemptsRef.current > MAX_POLL_ATTEMPTS) {
             stopPolling();
-            fail("Diarization job timed out. Please try again.");
+            fail("Batch transcription timed out. Please try again.");
             return;
           }
 
           try {
-            const status = await pollStatus(job.job_id);
+            const status = await getBatchJobStatus(job.job_id);
             setProgress(50 + Math.min(40, (status.progress?.completed_files ?? 0) * 10));
 
             if (status.status === "COMPLETED" || status.status === "PARTIAL_FAILURE") {
@@ -191,7 +169,7 @@ export function useBatchDiarization() {
               setProgress(90);
 
               try {
-                const files = await fetchFiles(job.job_id);
+                const files = await getBatchJobFiles(job.job_id);
                 const completed = files.filter((f) => f.transcript_url);
 
                 if (completed.length === 0) {
@@ -202,16 +180,16 @@ export function useBatchDiarization() {
                 // Download and merge all completed transcripts.
                 const allSegments: TranscriptSegment[] = [];
                 let fullText = "";
-                let durationSeconds = 0;
+                let totalDurationSeconds = 0;
                 let detectedLanguage: string | null = null;
                 const speakerIds = new Set<number | null>();
 
                 for (const fileEntry of completed) {
                   const transcriptUrl = fileEntry.transcript_url;
                   if (!transcriptUrl) continue;
-                  const transcript = await downloadTranscript(transcriptUrl);
+                  const transcript = await downloadBatchTranscript(transcriptUrl);
                   fullText += (fullText ? "\n" : "") + transcript.full_transcript;
-                  durationSeconds += transcript.duration_seconds || 0;
+                  totalDurationSeconds += transcript.duration_seconds || 0;
                   detectedLanguage =
                     detectedLanguage ??
                     transcript.language_detected ??
@@ -221,12 +199,11 @@ export function useBatchDiarization() {
 
                   for (const seg of transcript.segments) {
                     if (seg.text && seg.text.trim()) {
-                      const text = seg.text.trim();
                       const speaker = seg.speaker_id ?? null;
                       if (speaker !== null) speakerIds.add(speaker);
                       allSegments.push({
-                        key: `diarize:${fileEntry.original_path}:${seg.segment_id}`,
-                        text,
+                        key: `batch:${fileEntry.file_id}:${seg.segment_id}`,
+                        text: seg.text.trim(),
                         language: describeLanguage(
                           seg.language_detected ?? detectedLanguage,
                         ),
@@ -243,7 +220,7 @@ export function useBatchDiarization() {
                 setSegments(allSegments);
                 setFullTranscript(fullText);
                 setSpeakerCount(speakerIds.size);
-                setDurationMs(Math.round(durationSeconds * 1000));
+                setDurationMs(Math.round(totalDurationSeconds * 1000));
                 setLanguage(describeLanguage(detectedLanguage)?.name ?? null);
                 setProgress(100);
                 setState("complete");
@@ -259,30 +236,44 @@ export function useBatchDiarization() {
 
             if (status.status === "FAILED" || status.status === "CANCELLED") {
               stopPolling();
+              // Pull Gnani's per-file error message for the real reason.
+              let detail = status.cancel_reason ?? "";
+              if (!detail) {
+                try {
+                  // No status filter: returns every file, failed ones included.
+                  const files = await getBatchJobFiles(job.job_id);
+                  const failedFile = files.find((f) => f.error_message);
+                  detail = failedFile?.error_message ?? "";
+                } catch {
+                  // Best effort only.
+                }
+              }
               fail(
-                `Diarization job ${status.status.toLowerCase()}. ${
-                  (status as any).cancel_reason || ""
+                `Batch transcription ${status.status.toLowerCase()}.${
+                  detail ? ` ${detail}` : ""
                 }`.trim(),
               );
               return;
             }
           } catch (pollError) {
             // Polling errors are retried on the next interval; don't fail fast.
-            console.warn("[diarize] poll error", pollError);
+            console.warn("[batch] poll error", pollError);
           }
         }, POLL_INTERVAL_MS);
       } catch (failure) {
         stopPolling();
         setError(
-          failure instanceof Error ? failure.message : "Diarization failed. Please try again.",
+          failure instanceof Error
+            ? failure.message
+            : "Batch transcription failed. Please try again.",
         );
         setState("error");
       }
     },
-    [createJob, startJob, pollStatus, fetchFiles, downloadTranscript, select, fail, stopPolling],
+    [fail, select, stopPolling],
   );
 
-  /** Starts the diarization flow on the previously selected file. */
+  /** Transcribes the previously staged file (upload flow). */
   const generate = useCallback(() => {
     const file = selectedFileRef.current;
     if (!file) return;
@@ -295,15 +286,14 @@ export function useBatchDiarization() {
     ) {
       return;
     }
-    void run(file);
+    void run(file, { origin: "upload", durationMs: 0 });
   }, [run, state]);
 
-  /** Stops polling and asks Gnani to cancel the running job (best effort). */
   const cancel = useCallback(() => {
     const id = jobIdRef.current;
     cancelRef.current = true;
     stopPolling();
-    if (id) void cancelDiarizationJob(id);
+    if (id) void cancelBatchJob(id);
     setError(null);
     setState("idle");
     setJobId(null);
@@ -353,4 +343,4 @@ export function useBatchDiarization() {
   };
 }
 
-export type BatchDiarizationController = ReturnType<typeof useBatchDiarization>;
+export type BatchJobController = ReturnType<typeof useBatchJob>;

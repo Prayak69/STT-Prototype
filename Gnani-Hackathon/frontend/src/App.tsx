@@ -8,9 +8,8 @@ import { Sidebar } from "./components/Sidebar";
 import { TranscriptRail } from "./components/TranscriptRail";
 import { useAiStatus } from "./hooks/useAiStatus";
 import { useAudioStreaming } from "./hooks/useAudioStreaming";
-import { useBatchDiarization } from "./hooks/useBatchDiarization";
-import type { DiarizationState } from "./hooks/useBatchDiarization";
-import { countSpeakers, detectLanguage, metaForRecord } from "./lib/transcript";
+import { useBatchJob, type BatchJobState } from "./hooks/useBatchJob";
+import { detectLanguage, metaForRecord } from "./lib/transcript";
 import type { TranscriptMeta } from "./lib/transcript";
 import { DEFAULT_SETTINGS, loadSettings, saveSettings } from "./lib/settings";
 import type {
@@ -20,10 +19,8 @@ import type {
   SessionRecord,
 } from "./lib/types";
 
-type RailMode = "live" | "batch" | "saved";
-
 const AUDIO_BUSY = new Set(["requesting", "connecting", "recording", "stopping"]);
-const BATCH_BUSY = new Set<DiarizationState>([
+const BATCH_BUSY = new Set<BatchJobState>([
   "uploading",
   "created",
   "starting",
@@ -48,25 +45,6 @@ function useIsDesktop(): boolean {
   return isDesktop;
 }
 
-function batchStatus(state: DiarizationState): string {
-  switch (state) {
-    case "selected":
-      return "Ready";
-    case "uploading":
-    case "created":
-    case "starting":
-    case "polling":
-    case "downloading":
-      return "Processing";
-    case "complete":
-      return "Completed";
-    case "error":
-      return "Failed";
-    default:
-      return "Idle";
-  }
-}
-
 function liveStatus(state: string): string {
   switch (state) {
     case "ready":
@@ -86,6 +64,21 @@ function liveStatus(state: string): string {
   }
 }
 
+function batchStatus(state: BatchJobState): string {
+  switch (state) {
+    case "complete":
+      return "Completed";
+    case "error":
+      return "Failed";
+    case "idle":
+      return "Idle";
+    case "selected":
+      return "Ready";
+    default:
+      return "Processing";
+  }
+}
+
 function sortSessions(records: SessionRecord[]): SessionRecord[] {
   return [...records].sort(
     (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
@@ -94,7 +87,7 @@ function sortSessions(records: SessionRecord[]): SessionRecord[] {
 
 export default function App() {
   const audio = useAudioStreaming();
-  const diarize = useBatchDiarization();
+  const diarize = useBatchJob();
   const aiStatus = useAiStatus();
   const isDesktop = useIsDesktop();
 
@@ -109,6 +102,12 @@ export default function App() {
 
   const liveSavedRef = useRef(false);
   const batchSavedRef = useRef(false);
+  const liveRecordIdRef = useRef<string | null>(null);
+
+  // The batch hook is instantiated once; keep a stable ref to its run
+  // function so effects can trigger it without re-firing on identity changes.
+  const diarizeRunRef = useRef(diarize.run);
+  diarizeRunRef.current = diarize.run;
 
   useEffect(() => {
     saveSettings(settings);
@@ -125,12 +124,23 @@ export default function App() {
     [activeId, sessions],
   );
 
+  const audioBusy = AUDIO_BUSY.has(audio.state);
   const batchActive = diarize.state !== "idle";
   const batchBusy = BATCH_BUSY.has(diarize.state);
-  const audioBusy = AUDIO_BUSY.has(audio.state);
 
-  // Persist finished live sessions so they appear in history with the rest of
-  // the workspace. The guard prevents duplicate records across re-renders.
+  // Show the diarized batch transcript once segments arrive, or immediately
+  // for uploads (they replace the empty live transcript).
+  const batchVisible =
+    diarize.segments.length > 0 ||
+    (diarize.fileInfo?.origin === "upload" && diarize.state !== "idle");
+
+  // While the recorded conversation is being diarized, hold the AI run so it
+  // fires once — on the diarized transcript — after the batch completes.
+  const liveDiarizePending =
+    batchBusy && diarize.fileInfo?.origin === "live";
+
+  // Persist finished live sessions and hand the recording to the Gnani batch
+  // API for speaker-labelled transcription.
   useEffect(() => {
     if (audio.state !== "stopped") {
       liveSavedRef.current = false;
@@ -151,15 +161,25 @@ export default function App() {
       segments: audio.segments,
       notes: `${audio.segments.length} live segments`,
     };
+    liveRecordIdRef.current = record.id;
     setSavedSessions((previous) => [record, ...previous]);
-  }, [audio.elapsedMs, audio.segments, audio.state, sessionStartedAt]);
 
-  // Persist finished upload sessions the same way.
+    const file = audio.takeRecording();
+    if (file) {
+      void diarizeRunRef.current(file, {
+        origin: "live",
+        durationMs: audio.elapsedMs,
+      });
+    }
+  }, [audio.elapsedMs, audio.segments, audio.state, audio.takeRecording, sessionStartedAt]);
+
+  // Persist finished upload sessions once the batch transcription completes.
   useEffect(() => {
     if (diarize.state !== "complete") {
       batchSavedRef.current = false;
       return;
     }
+    if (diarize.fileInfo?.origin !== "upload") return;
     if (batchSavedRef.current) return;
     batchSavedRef.current = true;
     if (diarize.segments.length === 0) return;
@@ -169,11 +189,11 @@ export default function App() {
       fileName: diarize.fileInfo?.name ?? "Uploaded consultation",
       language: diarize.language ?? detectLanguage(diarize.segments),
       durationMs: diarize.durationMs,
-      createdAt: sessionStartedAt,
+      createdAt: new Date().toISOString(),
       status: "Completed",
       source: "upload",
       segments: diarize.segments,
-      notes: `${diarize.segments.length} segments · ${diarize.speakerCount || 0} speakers`,
+      notes: `${diarize.segments.length} segments · ${diarize.speakerCount || 1} speakers (diarized)`,
     };
     setSavedSessions((previous) => [record, ...previous]);
   }, [
@@ -183,61 +203,79 @@ export default function App() {
     diarize.segments,
     diarize.speakerCount,
     diarize.state,
-    sessionStartedAt,
   ]);
 
-  // Reveal the transcript panel as soon as a live session starts.
+  // Once the live conversation is diarized, upgrade its saved record with the
+  // speaker-labelled segments.
   useEffect(() => {
-    if (audio.state === "recording") setRailOpen(true);
-  }, [audio.state]);
+    if (diarize.state !== "complete") return;
+    if (diarize.fileInfo?.origin !== "live") return;
+    if (diarize.segments.length === 0) return;
+    const targetId = liveRecordIdRef.current;
+    if (!targetId) return;
 
+    setSavedSessions((previous) =>
+      previous.map((record) =>
+        record.id === targetId
+          ? {
+              ...record,
+              segments: diarize.segments,
+              durationMs: diarize.durationMs || record.durationMs,
+              notes: `${diarize.segments.length} segments · ${diarize.speakerCount || 1} speakers (diarized)`,
+            }
+          : record,
+      ),
+    );
+  }, [diarize.durationMs, diarize.fileInfo, diarize.segments, diarize.speakerCount, diarize.state]);
+
+  // Reveal the transcript panel as soon as work starts.
   useEffect(() => {
-    if (diarize.state === "polling") setRailOpen(true);
-  }, [diarize.state]);
+    if (audio.state === "recording" || diarize.state === "polling") setRailOpen(true);
+  }, [audio.state, diarize.state]);
 
   const updateSettings = useCallback((patch: Partial<AppSettings>) => {
     setSettings((previous) => ({ ...previous, ...patch }));
   }, []);
 
   const clearCurrentTranscript = useCallback(() => {
-    if (batchActive) {
-      diarize.reset();
-    } else {
-      audio.clearTranscript();
-    }
-  }, [audio, batchActive, diarize]);
+    audio.clearTranscript();
+  }, [audio]);
 
   const startRecording = useCallback(() => {
+    if (!batchBusy && diarize.state !== "idle") diarize.reset();
     setActiveId(null);
+    liveRecordIdRef.current = null;
     setPage("dashboard");
     setRailTab("transcript");
     setSessionStartedAt(new Date().toISOString());
     audio.clearTranscript();
     void audio.prepare();
-  }, [audio]);
+  }, [audio, batchBusy, diarize]);
 
   const selectFile = useCallback(
     (file: File) => {
+      if (audioBusy || batchBusy) return;
+      audio.clearTranscript();
+      if (audio.state !== "idle") audio.reset();
+      if (diarize.state !== "idle") diarize.reset();
+
       setActiveId(null);
+      liveRecordIdRef.current = null;
       setPage("dashboard");
       setRailTab("transcript");
       setSessionStartedAt(new Date().toISOString());
-      if (!audioBusy) {
-        audio.clearTranscript();
-        if (audio.state !== "idle") audio.reset();
-      }
-      diarize.select(file);
+      diarize.select(file, { origin: "upload", durationMs: 0 });
     },
-    [audio, audioBusy, diarize],
+    [audio, audioBusy, batchBusy, diarize],
   );
 
   const openRecord = useCallback(
     (record: SessionRecord) => {
-      if (!audioBusy) {
+      if (!audioBusy && !batchBusy) {
         audio.clearTranscript();
         if (audio.state !== "idle") audio.reset();
+        if (diarize.state !== "idle") diarize.reset();
       }
-      if (!batchBusy && diarize.state !== "idle") diarize.reset();
 
       setActiveId(record.id);
       setRailTab("transcript");
@@ -252,6 +290,7 @@ export default function App() {
     audio.reset();
     diarize.reset();
     setActiveId(null);
+    liveRecordIdRef.current = null;
     setPage("dashboard");
     setRailTab("transcript");
     setRailOpen(false);
@@ -263,31 +302,28 @@ export default function App() {
     setSidebarOpen(false);
   }, []);
 
-  const railMode: RailMode = activeSession
-    ? "saved"
-    : batchActive
-      ? "batch"
-      : "live";
-
-  const segments = activeSession
-    ? activeSession.segments
-    : batchActive
-      ? diarize.segments
+  const railMode = activeSession ? "saved" : batchVisible ? "batch" : "live";
+  const segments = batchVisible
+    ? diarize.segments
+    : activeSession
+      ? activeSession.segments
       : audio.segments;
 
   const meta: TranscriptMeta = useMemo(() => {
-    if (activeSession) return metaForRecord(activeSession);
-
-    if (batchActive) {
+    if (batchVisible && diarize.fileInfo) {
       return {
-        fileName: diarize.fileInfo?.name ?? "Uploaded consultation",
+        fileName: diarize.fileInfo.name,
         language: diarize.language ?? "Auto-detect",
-        durationMs: diarize.durationMs,
+        durationMs: diarize.durationMs || diarize.fileInfo.durationMs,
         status: batchStatus(diarize.state),
         createdAt: sessionStartedAt,
-        sourceLabel: "Uploaded file",
+        sourceLabel:
+          diarize.fileInfo.origin === "live"
+            ? "Live session · diarized"
+            : "Uploaded file · diarized",
       };
     }
+    if (activeSession) return metaForRecord(activeSession);
 
     return {
       fileName:
@@ -305,7 +341,7 @@ export default function App() {
     audio.elapsedMs,
     audio.segments,
     audio.state,
-    batchActive,
+    batchVisible,
     diarize.durationMs,
     diarize.fileInfo,
     diarize.language,
@@ -313,34 +349,31 @@ export default function App() {
     sessionStartedAt,
   ]);
 
-  const speakerCount = useMemo(
-    () => countSpeakers(segments, { clinicalLabels: settings.clinicalLabels }),
-    [segments, settings.clinicalLabels],
-  );
-
   const rail = (
     <TranscriptRail
       sourceKey={
-        activeSession
-          ? `record:${activeSession.id}`
-          : batchActive
-            ? `batch:${diarize.jobId ?? "current"}:${sessionStartedAt}`
+        batchVisible
+          ? `batch:${diarize.jobId ?? "current"}:${sessionStartedAt}`
+          : activeSession
+            ? `record:${activeSession.id}`
             : `live:${sessionStartedAt}`
       }
       segments={segments}
       meta={meta}
       mode={railMode}
-      isProcessing={batchActive ? batchBusy : audio.isProcessing}
-      isRecording={!activeSession && audio.state === "recording"}
+      isProcessing={batchVisible ? batchBusy : audio.isProcessing}
+      isRecording={!activeSession && !batchVisible && audio.state === "recording"}
       sessionComplete={
-        !activeSession && (audio.state === "stopped" || diarize.state === "complete")
+        !activeSession &&
+        (batchVisible
+          ? diarize.state === "complete"
+          : audio.state === "stopped" && !liveDiarizePending)
       }
-      clinicalLabels={settings.clinicalLabels}
+      aiReady={!batchBusy}
       settings={settings}
       onSettingsChange={updateSettings}
       onClear={clearCurrentTranscript}
       canClear={!activeSession && segments.length > 0}
-      speakerCount={speakerCount}
       aiStatus={aiStatus}
       tab={railTab}
       onTabChange={setRailTab}
@@ -363,7 +396,7 @@ export default function App() {
       <div className="lg:pl-60">
         <Header
           page={page}
-          connection={batchActive ? "idle" : audio.connection}
+          connection={batchActive && !batchVisible ? "idle" : audio.connection}
           onMenu={() => setSidebarOpen(true)}
           onNewSession={newSession}
           newSessionDisabled={newSessionDisabled}
@@ -383,7 +416,7 @@ export default function App() {
                 onOpenRecord={openRecord}
                 onRecord={startRecording}
                 onFile={selectFile}
-                onClearTranscript={() => audio.clearTranscript()}
+                onClearTranscript={clearCurrentTranscript}
                 onViewAll={() => setPage("transcriptions")}
                 aiStatus={aiStatus}
               />

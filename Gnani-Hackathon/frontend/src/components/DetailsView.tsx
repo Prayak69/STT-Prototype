@@ -6,19 +6,16 @@ import {
   ListChecks,
   ScrollText,
   Sparkles,
-  Users,
 } from "lucide-react";
 import type { TranscriptSegment } from "../hooks/useAudioStreaming";
 import { formatDate, formatDuration } from "../lib/format";
 import { translationLanguageLabel } from "../lib/settings";
-import { countSpeakers, countWords, detectLanguage, type TranscriptMeta } from "../lib/transcript";
+import { countWords, detectLanguage, type TranscriptMeta } from "../lib/transcript";
 import type { TranslationLanguage } from "../lib/types";
 
 interface DetailsViewProps {
   meta: TranscriptMeta;
   segments: TranscriptSegment[];
-  clinicalLabels: boolean;
-  speakerCount: number;
   status: string;
   sourceLabel: string;
   translated: boolean;
@@ -59,8 +56,6 @@ function Row({
 export function DetailsView({
   meta,
   segments,
-  clinicalLabels,
-  speakerCount,
   status,
   sourceLabel,
   translated,
@@ -70,7 +65,6 @@ export function DetailsView({
   aiModel,
 }: DetailsViewProps) {
   const words = countWords(segments);
-  const speakers = speakerCount || countSpeakers(segments, { clinicalLabels });
   const language = meta.language || detectLanguage(segments);
 
   return (
@@ -96,7 +90,6 @@ export function DetailsView({
         <Row icon={FileAudio} label="File name" value={meta.fileName} wide />
         <Row icon={Clock3} label="Audio duration" value={formatDuration(meta.durationMs)} />
         <Row icon={Languages} label="Language" value={language} />
-        <Row icon={Users} label="Speakers detected" value={String(speakers)} />
         <Row icon={ListChecks} label="Processing status" value={status} />
         <Row icon={ScrollText} label="Transcript word count" value={`${words} words`} />
         <Row icon={AudioLines} label="Segments" value={String(segments.length)} />

@@ -26,7 +26,6 @@ interface TranscriptViewProps {
   meta: TranscriptMeta;
   mode: ListMode;
   isProcessing: boolean;
-  clinicalLabels: boolean;
   canClear: boolean;
   onClear: () => void;
 }
@@ -39,7 +38,6 @@ export function TranscriptView({
   meta,
   mode,
   isProcessing,
-  clinicalLabels,
   canClear,
   onClear,
 }: TranscriptViewProps) {
@@ -57,7 +55,7 @@ export function TranscriptView({
     setConfirmingClear(false);
   }, [meta.fileName]);
 
-  const text = buildTranscriptText(segments, meta, { clinicalLabels });
+  const text = buildTranscriptText(segments, meta);
   const words = countWords(segments);
   const stem = safeFileStem(meta.fileName);
 
@@ -103,7 +101,7 @@ export function TranscriptView({
             onClick={() =>
               downloadText(
                 `${stem}-transcript.json`,
-                buildTranscriptJson(segments, meta, { clinicalLabels }),
+                buildTranscriptJson(segments, meta),
                 "application/json",
               )
             }
@@ -147,7 +145,7 @@ export function TranscriptView({
                   onClear();
                   setConfirmingClear(false);
                 }}
-                className="rounded-md bg-rose-600 px-2 py-1 text-[10px] font-semibold text-white hover:bg-rose-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-rose-600"
+                className="rounded-md bg-rose-600 px-2 py-1 text-[10px] font-semibold text-white hover:bg-rose-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600"
               >
                 Clear
               </button>
@@ -167,7 +165,6 @@ export function TranscriptView({
         segments={segments}
         isProcessing={isProcessing}
         mode={mode}
-        clinicalLabels={clinicalLabels}
         emptyTitle={
           mode === "saved"
             ? "No transcript available"
@@ -186,7 +183,7 @@ export function TranscriptView({
       <div className="flex items-center justify-between gap-2 border-t border-slate-100 px-4 py-2 text-[10px] text-slate-400">
         <span>
           {mode === "batch"
-            ? "Speaker-separated transcript from the uploaded file"
+            ? "Transcript from the uploaded file"
             : mode === "saved"
               ? "Saved session snapshot"
               : "Language is detected per utterance"}
