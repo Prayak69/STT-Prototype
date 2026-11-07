@@ -12,7 +12,7 @@ Two independent pipelines, one app:
 | Latency | Sub-second per utterance | Minutes (async job, polled every 10 s) |
 | Languages | Auto-detected (`indic-auto`) | Auto-detected (`indic-auto`) |
 
-No translation, no simulated text, no user accounts — and the **Gnani API key never leaves the server**.
+Raw transcripts stay untouched; an optional one-click **English translation** (Gemini) is shown alongside them, and a **structured consultation report** can be generated on demand from the finished transcript. No simulated text, no user accounts — and neither the **Gnani API key nor the Gemini key ever leaves the server**.
 
 ---
 
@@ -20,12 +20,17 @@ No translation, no simulated text, no user accounts — and the **Gnani API key 
 
 **Requirements:** Node.js **20.19+** (or 22.12+), a microphone (for realtime), and a Gnani API key.
 
-1. Put your key in `.env` in this folder (`Gnani-Hackathon/.env` — keep it out of version control). Also put `HF_TOKEN` there for the pyannote sidecar:
+1. Put your key in `.env` in this folder (`Gnani-Hackathon/.env` — keep it out of version control). Also put `HF_TOKEN` there for the pyannote sidecar, and a Gemini key if you want English translation and consultation reports:
 
    ```env
    GNANI_API_KEY=your-gnani-api-key
+   HF_TOKEN=your-hugging-face-token
+   GEMINI_API_KEY=your-gemini-api-key
+   GEMINI_MODEL=gemini-3.5-flash
    PORT=8787
    ```
+
+   Translation and reports are optional. Without `GEMINI_API_KEY`, transcription works exactly as before and the Translate / Generate report controls stay disabled.
 
 2. Install and run:
 
@@ -120,6 +125,9 @@ speaker badges.
 ### 3. Transcript panel
 
 - Copy the whole transcript (with clipboard fallback for older browsers), confirm-to-clear.
+- Optional **Translate** toggle adds an English translation under each raw segment (live and batch share the same panel).
+- **Generate report** turns the finished transcript into a SOAP-style consultation draft. Assign speaker roles first (clinician / patient) so attribution is explicit; the model never guesses.
+- Report items link back to the transcript segments that support them (source chips).
 - Empty/error states explain what happened ("No speech detected", "No transcript produced").
 - Realtime and batch use **separate state**, so neither can clear or interrupt the other.
 
@@ -149,6 +157,22 @@ GET  /:id (every 10 s) ──────►  ───── polling ───�
 GET  /:id/files ─────────────►  ─────────────────────────────►  GET .../files?status=COMPLETED
 GET  /download?url=... ──────►  fetch transcript_url ─────────►  (presigned URL)
                                   ◄── segments[] with speaker_id ─
+
+TRANSLATION (additive, both pipelines)
+Browser                          Node server                        Gemini
+───────                          ───────────                        ──────
+POST /api/translate ─────────►  validate + chunk ───────────────►  generateContent
+   { segments: [{id,text}] }      Gemini key stays here             responseSchema: JSON
+                                  ◄── [{id, text}] ──────────────
+   ◄── English text; raw `text` is never overwritten
+
+CONSULTATION REPORT (on demand, both pipelines)
+Browser                          Node server                        Gemini
+───────                          ───────────                        ──────
+POST /api/report ────────────►  validate + chunk ───────────────►  generateContent
+   { mode, segments: [...] }      Gemini key stays here             responseSchema: report
+                                  ◄── structured JSON ───────────
+   ◄── draft report; evidence ids point back to transcript segments
 ```
 
 ### What the server does for batch (all transparent to the user)
@@ -208,27 +232,37 @@ x-max-speech-s:     30    ← forces a transcript mid-monologue so results keep 
 │   │   ├── components/
 │   │   │   ├── BatchPanel.tsx     # Two-step upload→Generate, stage pills, progress, cancel/retry
 │   │   │   ├── LiveTranscription.tsx  # Shared transcript panel; Speaker N badges + segment times
+│   │   │   ├── ConsultationReport.tsx # SOAP-style report, role picker, evidence links, copy/JSON/print
 │   │   │   ├── StartActions.tsx   # Record / Upload entry cards
 │   │   │   ├── RecordingPanel.tsx, AudioVisualizer.tsx, Header.tsx,
 │   │   │   ├── StatusBadge.tsx, ErrorBanner.tsx
 │   │   ├── hooks/
 │   │   │   ├── useAudioStreaming.ts    # Realtime: capture → WS → segments (state machine)
 │   │   │   ├── useBatchDiarization.ts  # Batch: select → generate → upload → poll → download
+│   │   │   ├── useTranscriptTranslation.ts # Shared English translation for live + batch segments
+│   │   │   ├── useConsultationReport.ts # On-demand report state, speaker roles, staleness
 │   │   │   └── useBatchProcessing.ts   # Legacy local-decode WS batch (unused by UI, kept for tests)
 │   │   ├── lib/
 │   │   │   ├── pcm.ts                 # Resampler, frame emitter, WS URL builder
 │   │   │   ├── batch.ts               # File validation, decode, downmix, resample (legacy path)
+│   │   │   ├── report.ts              # Report types, Markdown export, speaker labels
 │   │   │   └── languages.ts, format.ts, errors.ts
 │   │   ├── main.tsx
 │   │   └── index.css
 │   ├── tsconfig.json
 │   └── vite.config.ts
 ├── backend/                   # Node/Express + WebSocket proxy
-│   ├── server.ts              # Express app: static hosting, /api/health, batch diarization routes
+│   ├── server.ts              # Express app: static hosting, /api/health, batch + medicine + translate routes
 │   ├── gnaniWebSocket.ts      # Realtime WS proxy (+ legacy /ws/stt/batch streaming path)
 │   ├── gnaniBatch.ts          # Gnani Batch Jobs REST client: create/start/poll/files/download/cancel,
 │   │                          #   magic-byte extension sniffing, 429 retry wrapper
 │   ├── diarization.ts         # Client for the local pyannote sidecar
+│   ├── translation.ts         # Gemini-backed English translation, validation, retries
+│   ├── consultationReport.ts  # Gemini structured report, schema validation, chunk merge
+│   ├── reportTypes.ts         # Report contract, roles, evidence and completeness types
+│   ├── pharmaDesk.ts          # PharmaDesk Medicine Reference API client (no credentials)
+│   ├── medicineMatcher.ts     # Normalisation, aliases, strength/form checks, conservative ranking
+│   ├── medicineTypes.ts       # Verified API schema + matcher/HTTP types
 │   ├── config.ts              # .env loading, Gnani session constants
 │   ├── logger.ts              # Structured JSON-ish console logger
 │   └── tsconfig.server.json
@@ -238,9 +272,12 @@ x-max-speech-s:     30    ← forces a transcript mid-monologue so results keep 
 │   └── requirements.txt
 ├── scripts/
 │   ├── build.mjs              # Cross-platform typecheck + build
-│   └── test-batch-audio.ts, test-batch-proxy.ts   # Offline tests (no Gnani calls)
+│   ├── test-batch-audio.ts, test-batch-proxy.ts   # Offline tests (no Gnani calls)
+│   ├── test-medicines.ts      # Mocked-API medicine client + matcher tests
+│   ├── test-translation.ts    # Mocked Gemini translation validation + error tests
+│   └── test-report.ts         # Mocked Gemini report validation, merge, and error tests
 ├── package.json               # Single npm project for frontend + backend
-├── .env                       # GNANI_API_KEY, HF_TOKEN (git-ignored)
+├── .env                       # GNANI_API_KEY, HF_TOKEN, GEMINI_API_KEY (git-ignored)
 └── .env.example
 ```
 
@@ -252,7 +289,7 @@ x-max-speech-s:     30    ← forces a transcript mid-monologue so results keep 
 
 | Method & path | Purpose |
 | --- | --- |
-| `GET /api/health` | `{ status, model, language, sampleRate, configured }` |
+| `GET /api/health` | `{ status, model, language, sampleRate, configured, translation: { configured, model, targetLanguage }, report: { configured, model } }` |
 | `WS /ws/stt/realtime` | Realtime browser audio (binary 1,024-byte PCM frames) + JSON control frames |
 | `WS /ws/stt/batch` *(legacy)* | Uploaded-file streaming via the realtime Gnani socket, with `batch_ack` flow control |
 | `POST /api/stt/batch/diarize` | Multipart upload (`file`) → creates a diarization job → `{ job_id, status }` |
@@ -261,6 +298,9 @@ x-max-speech-s:     30    ← forces a transcript mid-monologue so results keep 
 | `GET /api/stt/batch/diarize/:jobId/files` | Completed files + `transcript_url`s |
 | `POST /api/stt/batch/diarize/:jobId/cancel` | Cancel the Gnani job |
 | `GET /api/stt/batch/diarize/download?url=…` | Proxies the presigned `transcript_url` and returns segment JSON |
+| `POST /api/medicines/search` | Reference-only medicine match: `{ query, market?, limit? }` → ranked candidates; never edits a transcript or prescribes a dose |
+| `POST /api/translate` | Additive English translation: `{ segments: [{ id, text, language? }], targetLanguage? }` → `{ ok, translations, model, targetLanguage }`; the raw transcript is never modified |
+| `POST /api/report` | Structured consultation report: `{ mode?, segments: [{ id, text, speaker?, role?, startTime?, endTime?, language? }] }` → `{ ok, report, model, generatedAt }`; every item carries evidence segment ids |
 
 Realtime WS accepts only exact **1,024-byte binary** frames and `{"type":"commit"}` text frames; batch WS sessions also emit `{"type":"batch_ack","frames":N}` for the client's in-flight window. Everything else is dropped and logged.
 
@@ -286,18 +326,268 @@ Realtime WS accepts only exact **1,024-byte binary** frames and `{"type":"commit
 
 The UI renders one card per segment: language badge (when known), **Speaker N** badge, `start – end` time range, text.
 
+### Medicine reference search
+
+`POST /api/medicines/search` is an additive reference feature. It is independent
+of the STT, WebSocket, audio and diarization paths, and it never changes the
+conversation transcript. It can be used to verify medicines named in the
+transcript or report; it is not required for either.
+
+```json
+{
+  "query": "Dolo 650",
+  "market": "IN",
+  "limit": 10
+}
+```
+
+`market` is optional (`IN`, `US`, `GB`, `EU`, `CA`, `AU`; default `IN`) and
+`limit` is optional (`1..50`, default `10`).
+
+The response returns **all** plausible candidates with a conservative status:
+
+| Status | Meaning |
+| --- | --- |
+| `matched` | Deterministic exact product-name + strength match, with no alias/typo rewrite |
+| `suggested` | One plausible candidate (alias, spelling correction, or fuzzy match); verify it |
+| `ambiguous` | Multiple plausible candidates; choose explicitly |
+| `unmatched` | No reliable match, or a strength/dosage-form mismatch was rejected |
+
+Fuzzy similarity alone **never** produces `matched`. Each result includes
+`canonicalName`, `genericName`, `genericComposition`, `strength`,
+`manufacturer`, `confidence`, `matchStatus`, `strengthComparison`,
+`dosageFormComparison`, `matchedFields` and the source record. There is no
+separate brand field in the upstream search schema, so `brand` is `null` and
+the product name is returned in `canonicalName`.
+
+The endpoint also accepts Hindi/Devanagari text, Romanized spellings, spoken
+strengths (`"six fifty"` → `650`) and a small curated set of Indian brand
+aliases (for example `dolo` → paracetamol, `augmentin` → amoxicillin +
+clavulanic acid). Aliases are search hints, not verified clinical equivalences.
+
+**Dosage is never inferred.** `strength` and `route` in the response are
+catalogue product metadata, not a prescribed dose, frequency or duration.
+Those must come exclusively from the original doctor–patient conversation.
+
+**Licensing:** PharmaDesk data is proprietary/all rights reserved and Indian
+brand names are licensed for use inside PharmaDesk, not redistribution. This
+integration displays results transiently, does not cache or persist them, and
+does not expose the upstream URL or any credential to the browser. The
+upstream service needs no API key.
+
+### English translation
+
+Gnani Prisma does **not** translate — its API docs explicitly list translation as
+unsupported. Translation is therefore a separate, additive step after
+transcription. It works for both pipelines because the frontend translates the
+shared `TranscriptSegment` list.
+
+```json
+{
+  "segments": [
+    { "id": "seg-1", "text": "मुझे सिरदर्द है", "language": "Hindi" },
+    { "id": "seg-2", "text": "Take one tablet after food." }
+  ]
+}
+```
+
+```json
+{
+  "ok": true,
+  "targetLanguage": "English",
+  "model": "gemini-3.5-flash",
+  "translations": [
+    { "id": "seg-1", "text": "I have a headache." },
+    { "id": "seg-2", "text": "Take one tablet after food." }
+  ]
+}
+```
+
+- **Raw text is preserved.** The UI adds `translatedText` and a translation state
+  to a copy of each segment; `text` is never overwritten.
+- **Optional.** Without `GEMINI_API_KEY`, `translation.configured` is `false` and
+  the Translate control is disabled. Transcription is unaffected.
+- **Server-side key.** Only `GEMINI_API_KEY` is used, from `.env`; the browser
+  posts segment text to this server and never sees the key.
+- **Limits.** Up to 50 segments, 4,000 characters per segment and 24,000
+  characters per request (configurable). The browser sends chunks of 20.
+- **Privacy.** Only finished transcript *text* is sent to Gemini, and only while
+  translation is enabled. Audio never leaves this server for translation.
+- **Errors.** `400` invalid request, `429` upstream rate limit, `503` translation
+  disabled/not configured, `502`/`504` upstream failure. Failed segments show a
+  per-segment message and a Retry action.
+
+### Structured consultation report
+
+`POST /api/report` converts the finished transcript into a **SOAP-style draft**
+for clinician review. It is generated on demand, never automatically, and the
+raw transcript is not modified.
+
+```json
+{
+  "mode": "batch",
+  "segments": [
+    {
+      "id": "seg-1",
+      "text": "I have had a headache and fever for two days.",
+      "speaker": "Speaker 1",
+      "role": "patient",
+      "startTime": 0,
+      "endTime": 4.2,
+      "language": "Hindi"
+    },
+    {
+      "id": "seg-2",
+      "text": "Take one Paracetamol 650 mg tablet twice a day after food.",
+      "speaker": "Speaker 2",
+      "role": "clinician",
+      "startTime": 4.2,
+      "endTime": 10.1,
+      "language": "Hindi"
+    }
+  ]
+}
+```
+
+```json
+{
+  "ok": true,
+  "model": "gemini-3.5-flash",
+  "generatedAt": "2026-11-06T13:00:00.000Z",
+  "report": {
+    "meta": {
+      "source": "batch",
+      "durationSeconds": 10.1,
+      "languages": ["Hindi"],
+      "speakerCount": 2,
+      "segmentCount": 2,
+      "completeness": "complete"
+    },
+    "summary": "A patient with headache and fever for two days.",
+    "patient": { "age": null, "sex": null, "identifiers": [] },
+    "chiefComplaint": {
+      "text": "Headache and fever for two days",
+      "evidence": ["seg-1"]
+    },
+    "subjective": {
+      "historyOfPresentIllness": "Two days of headache and fever.",
+      "symptoms": [
+        {
+          "symptom": "Headache",
+          "onset": "2 days ago",
+          "duration": "2 days",
+          "severity": null,
+          "aggravatingFactors": null,
+          "relievingFactors": null,
+          "evidence": ["seg-1"]
+        }
+      ],
+      "pastMedicalHistory": [],
+      "currentMedications": [],
+      "allergies": [],
+      "familyHistory": [],
+      "socialHistory": [],
+      "reviewOfSystems": []
+    },
+    "objective": { "vitals": [], "examinationFindings": [] },
+    "assessment": {
+      "impression": null,
+      "differential": [],
+      "statedBy": null,
+      "evidence": []
+    },
+    "plan": {
+      "investigations": [],
+      "medications": [
+        {
+          "name": "Paracetamol",
+          "strength": "650 mg",
+          "dose": "1 tablet",
+          "frequency": "twice a day",
+          "duration": null,
+          "route": "oral",
+          "instructions": "after food",
+          "statedBy": "clinician",
+          "evidence": ["seg-2"]
+        }
+      ],
+      "advice": [],
+      "followUp": null
+    },
+    "redFlags": [],
+    "gaps": ["No allergy history documented"],
+    "warnings": [],
+    "disclaimer": "AI-generated consultation draft. Review against the original conversation before any clinical use. This is not a diagnosis, prescription or medical advice."
+  }
+}
+```
+
+- **Sections:** meta, summary, patient, chief complaint, subjective (HPI,
+  symptoms, history, medications, allergies, family/social, ROS), objective
+  (vitals, examination), assessment (impression, differential), plan
+  (investigations, medications, advice, follow-up), red flags, gaps and review
+  notes.
+- **Speaker roles.** Diarization only tells us `Speaker N`. Assign **clinician /
+  patient / other** in the UI before generating so attribution is explicit. If
+  roles are not assigned, the report warns about it and never guesses.
+- **Evidence.** Every symptom, medication, finding and assessment item
+  carries the supporting segment ids. Source chips in the UI jump back to the
+  transcript.
+- **No invention.** The prompt and server validation require explicit content
+  only: no inferred diagnoses, doses, frequencies or follow-up. Missing fields
+  are `null` / `[]`, never fabricated.
+- **Dose fidelity.** Medicine names, strengths, doses and numbers are preserved
+  exactly as spoken. The endpoint never calculates or substitutes a dose.
+- **English input.** The frontend sends the English translation when available,
+  otherwise the raw segment text; Gemini can read Indic scripts directly.
+- **Long transcripts.** Requests over `REPORT_CHUNK_CHARS` (60,000 chars) are
+  split at segment boundaries, normalized per chunk, merged and deduplicated.
+  The hard input cap is `REPORT_MAX_INPUT_CHARS` (200,000 chars → `413`).
+- **Optional.** Without `GEMINI_API_KEY`, `report.configured` is `false` and the
+  Generate report control is disabled. Transcription is unaffected.
+- **Privacy.** Only finished transcript text is sent to Gemini, and only when
+  the user clicks Generate. Audio is never sent to the report provider.
+- **Errors.** `400` invalid request, `413` transcript too large, `429` upstream
+  rate limit, `503` disabled/not configured, `502`/`504` upstream failure.
+- **Not a medical device.** The report is a documentation aid. It must be
+  reviewed against the original conversation before any clinical use.
+
 ---
 
 ## Offline tests
 
 ```bash
 npm run test:batch
+npm run test:medicines
+npm run test:translation
+npm run test:report
 ```
 
-Runs the legacy-path suites **without calling Gnani**:
+`test:batch` runs the legacy-path suites **without calling Gnani**:
 
 - **Batch audio preparation** — stereo→mono downmix + padding to whole 512-sample frames, 48 kHz→16 kHz resampling, rejected formats/sizes/durations, cancellation mid-decode.
 - **Batch proxy relay** — spins a fake upstream WS to prove every frame is relayed **in order** with a trailing `commit`, and that the realtime path is unaffected.
+
+`test:medicines` runs fully mocked PharmaDesk responses (no live API calls):
+
+- Verified query parameters, schema validation, 400 mapping, invalid-response rejection.
+- 429 retry with `Retry-After`, exhausted rate limits, and timeouts.
+- Normalisation of spoken strengths, Hindi/Devanagari text, spelling variants and aliases.
+- Strength + dosage-form validation, exact-match vs suggestion vs ambiguity, and unmatched results.
+
+`test:translation` runs fully mocked Gemini responses (no live API calls):
+
+- Request validation: ids, duplicate ids, text/total limits, English-only target.
+- Successful alignment by id, model/endpoint/header checks, JSON response mode.
+- `429`, rejected credentials, missing-segment, empty-candidate and unreadable-response mapping.
+
+`test:report` runs fully mocked Gemini responses (no live API calls):
+
+- Request validation: mode, ids, duplicate ids, text/limit caps, speaker roles, timestamps, `413`.
+- Normalization: placeholders → empty values, unknown fields dropped, evidence ids restricted to real segments, disclaimer enforced.
+- Clinical fidelity: medicine strengths/doses/frequencies preserved; missing assessment stays empty.
+- Chunked transcripts: split at segment boundaries, per-chunk validation, merge + dedupe, merge warnings.
+- `429`, rejected credentials, malformed/empty responses and server-side key handling.
 
 Useful for verifying the shared plumbing (resampler, framing, pacing, flow control) without network or quota concerns.
 
@@ -312,6 +602,9 @@ Useful for verifying the shared plumbing (resampler, framing, pacing, flow contr
 | `npm start` | Serve `dist/` and all proxies on port 8787 |
 | `npm run typecheck` | Typecheck both TypeScript projects |
 | `npm run test:batch` | Offline suites for legacy audio conversion + proxy relay |
+| `npm run test:medicines` | Mocked-API tests for the PharmaDesk client + medicine matcher |
+| `npm run test:translation` | Mocked-Gemini tests for translation validation, alignment and error handling |
+| `npm run test:report` | Mocked-Gemini tests for report validation, normalization, chunk merge and errors |
 | `npm run preview` | Preview the Vite build |
 
 ### Environment variables
@@ -319,10 +612,32 @@ Useful for verifying the shared plumbing (resampler, framing, pacing, flow contr
 | Variable | Default | Description |
 | --- | --- | --- |
 | `GNANI_API_KEY` | — | **Required.** Gnani API key; verified at boot, server-side only |
+| `GEMINI_API_KEY` | — | Optional. Enables English translation; server-side only |
+| `GEMINI_MODEL` | `gemini-3.5-flash` | Gemini model used for translation |
+| `GEMINI_API_BASE_URL` | `https://generativelanguage.googleapis.com/v1beta` | Override the Gemini API base |
+| `TRANSLATION_ENABLED` | `true` | Set `false` to disable the translation endpoint even when a key is present |
+| `TRANSLATION_TIMEOUT_MS` | `20000` | Per-request Gemini timeout |
+| `TRANSLATION_MAX_RETRIES` | `1` | Retries for transient translation failures |
+| `TRANSLATION_MAX_SEGMENTS` | `50` | Maximum segments per translation request |
+| `TRANSLATION_MAX_SEGMENT_CHARS` | `4000` | Maximum characters per segment |
+| `TRANSLATION_MAX_TOTAL_CHARS` | `24000` | Maximum characters per translation request |
+| `REPORT_ENABLED` | `true` | Set `false` to disable the report endpoint even when a key is present |
+| `REPORT_MODEL` | `GEMINI_MODEL` (`gemini-3.5-flash`) | Gemini model used for report extraction |
+| `REPORT_TIMEOUT_MS` | `60000` | Per-request Gemini timeout for report generation |
+| `REPORT_MAX_RETRIES` | `1` | Retries for transient report failures |
+| `REPORT_MAX_SEGMENTS` | `400` | Maximum segments per report request |
+| `REPORT_MAX_SEGMENT_CHARS` | `8000` | Maximum characters per segment |
+| `REPORT_MAX_INPUT_CHARS` | `200000` | Hard input cap; larger requests return `413` |
+| `REPORT_CHUNK_CHARS` | `60000` | Transcripts above this are processed in chunks and merged |
+| `REPORT_MAX_OUTPUT_TOKENS` | `8192` | Maximum tokens for the structured JSON response |
 | `PORT` | `8787` | Server port |
 | `HOST` | `0.0.0.0` | Bind address |
 | `MAX_SESSIONS_PER_IP` | `2` | Concurrent realtime Gnani streams per client IP |
 | `GNANI_STT_URL` | `wss://api.vachana.ai/stt/v3/stream` | Override the realtime upstream (its host is reused for batch REST calls) |
+| `PHARMADESK_BASE_URL` | `https://pharmadesk.accron.in/api` | Server-side PharmaDesk API base; no credential is required |
+| `PHARMADESK_TIMEOUT_MS` | `8000` | Per-request upstream timeout for medicine search |
+| `PHARMADESK_MAX_RETRIES` | `2` | Retries for `429` responses, honouring `Retry-After` |
+| `PHARMADESK_DEFAULT_LIMIT` | `10` | Default candidate limit for medicine search |
 | `API_TARGET` (dev) | `http://localhost:8787` | Vite's proxy target for `/api` and `/ws` |
 
 ---
@@ -342,6 +657,12 @@ Useful for verifying the shared plumbing (resampler, framing, pacing, flow contr
 | Batch ends with `FAILED` / `START_FAILED` | Check the server log for the Gnani error body (`cancel_reason` is included in the UI). Silent audio fails with "Empty transcript after 3 retries". |
 | Batch finishes with "No speech detected" | Processed fully but no utterances found — verify the file contains audible speech. |
 | "Too many active recording sessions" | Realtime per-IP cap (`MAX_SESSIONS_PER_IP`, default 2). Stop another tab or wait a few seconds. |
+| Translate control is disabled | Add `GEMINI_API_KEY` to `.env`, restart, and check `/api/health` → `translation.configured`. |
+| "English translation failed: …" | Upstream Gemini error/quota/timeout. Retry; check the server log for the `Translation failed` entry. |
+| Generate report control is disabled | Add `GEMINI_API_KEY` to `.env`, restart, and check `/api/health` → `report.configured`. |
+| "Report generation failed: …" | Upstream Gemini error/quota/timeout or invalid model output. Retry; check the server log for the `Consultation report failed` entry and its error `code`. |
+| Report warnings mention speaker roles | Diarization only gives `Speaker N`. Assign clinician/patient roles in the report panel, then regenerate. |
+| Assessment is empty | Correct behaviour: nothing was explicitly stated as an assessment. The report never invents a diagnosis. |
 | No transcript while speaking live | VAD emits per finished utterance: speak ≥ ~0.5 s then pause. Raise mic input level. |
 | Last sentence missing (realtime) | The trailing-silence + `commit` finalize handles it; a network drop can still beat the timeout — retry. |
 | Port already in use | Set `PORT=xxxx` in `.env` and mirror it in `API_TARGET` for the dev proxy. |
@@ -352,9 +673,11 @@ Server logs include session ids, frame counts, upstream close codes, rate-limit 
 
 ## Security & privacy
 
-- **Key isolation:** `GNANI_API_KEY` is read from `.env` and attached **only** by the Node server. It never appears in the frontend bundle, browser dev-tools, or logs.
+- **Key isolation:** `GNANI_API_KEY` and `GEMINI_API_KEY` are read from `.env` and attached **only** by the Node server. They never appear in the frontend bundle, browser dev-tools, or logs.
 - **Realtime:** raw 16 kHz PCM is relayed in memory only — nothing written to disk, nothing stored.
 - **Batch:** the uploaded file lives in the server process memory (multer memory storage) only long enough to forward it to Gnani; transcripts are fetched, shaped, and discarded — never written to disk.
+- **Translation:** only finished transcript text is sent to Gemini, and only when translation is enabled. Audio is never sent to the translation provider.
+- **Reports:** only finished transcript text is sent to Gemini, and only when the user clicks Generate report. Audio is never sent, and reports are kept in the tab's memory only.
 - **Auth to Gnani / to browser:** the browser only ever talks to *your* server; jobs are keyed only by knowledge of that API surface.
 - **Transcript lifetime:** transcripts live in the tab's memory; clear or close the tab and they're gone.
 - **Exposure:** intended for local/private deployment. If you expose it publicly: terminate TLS, add your own auth + rate limiting in front, and keep the Gnani key server-side.
@@ -366,7 +689,11 @@ Server logs include session ids, frame counts, upstream close codes, rate-limit 
 - **Realtime diarization doesn't exist at Gnani** — diarization is a Gnani Batch Jobs API feature only, so it is wired to the batch path (that's exactly what we did).
 - Batch direct upload is capped at **10 MB**; files needing more require Gnani's presigned-upload flow (not implemented).
 - The legacy local-decode WebSocket batch path still exists (code + tests) but is not wired into the UI; the active batch path is the REST jobs flow above.
-- No translation, no user accounts/auth, no persisted history.
+- **Gnani Prisma does not translate** — English translation is a separate Gemini step and is optional; without `GEMINI_API_KEY` the app only transcribes.
+- **The consultation report is a documentation aid, not a medical device.** It is generated on demand from transcript text and must be reviewed against the original conversation. It does not diagnose, prescribe, or replace clinician judgement.
+- **Speaker roles are manual.** Diarization labels voices but cannot know who is the clinician; roles must be assigned in the UI.
+- Long-document chunking is lossy at chunk boundaries: the report merges per-chunk drafts, so a clinician should re-read the merged output.
+- No user accounts/auth, no persisted history.
 - Language detection is automatic (`indic-auto`); realtime shows it per utterance, batch per segment (`language_detected`).
 - Poll-based progress is coarse (job-level counters, not audio-level seek bars).
 

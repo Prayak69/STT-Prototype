@@ -45,6 +45,78 @@ export const config = {
     numSpeakers: intFromEnv("DIARIZER_NUM_SPEAKERS", 2),
   },
 
+  /**
+   * English translation of finished transcript segments.
+   *
+   * Gnani Prisma does not translate, so this uses Gemini on the server. The
+   * key stays server-side; the browser only posts segment text to
+   * `POST /api/translate`. Translation is optional: without a key the rest of
+   * the app works exactly as before and the endpoint reports "not configured".
+   */
+  translation: {
+    enabled: (process.env.TRANSLATION_ENABLED ?? "true").toLowerCase() !== "false",
+    apiKey: (process.env.GEMINI_API_KEY ?? "").trim(),
+    model: process.env.GEMINI_MODEL ?? "gemini-3.5-flash",
+    baseUrl: (
+      process.env.GEMINI_API_BASE_URL ??
+      "https://generativelanguage.googleapis.com/v1beta"
+    ).replace(/\/+$/, ""),
+    targetLanguage: "English",
+    timeoutMs: intFromEnv("TRANSLATION_TIMEOUT_MS", 20000),
+    maxRetries: intFromEnv("TRANSLATION_MAX_RETRIES", 1),
+    maxSegments: intFromEnv("TRANSLATION_MAX_SEGMENTS", 50),
+    maxSegmentChars: intFromEnv("TRANSLATION_MAX_SEGMENT_CHARS", 4000),
+    maxTotalChars: intFromEnv("TRANSLATION_MAX_TOTAL_CHARS", 24000),
+  },
+
+  /**
+   * Structured consultation report.
+   *
+   * Derived from finished transcript text with Gemini. This is a documentation
+   * aid, not a diagnostic system. The key stays server-side; the browser posts
+   * validated segments to `POST /api/report`. Without a key the endpoint
+   * reports "not configured" and transcription is unaffected.
+   */
+  report: {
+    enabled: (process.env.REPORT_ENABLED ?? "true").toLowerCase() !== "false",
+    apiKey: (process.env.GEMINI_API_KEY ?? "").trim(),
+    model:
+      process.env.REPORT_MODEL ??
+      process.env.GEMINI_MODEL ??
+      "gemini-3.5-flash",
+    baseUrl: (
+      process.env.GEMINI_API_BASE_URL ??
+      "https://generativelanguage.googleapis.com/v1beta"
+    ).replace(/\/+$/, ""),
+    timeoutMs: intFromEnv("REPORT_TIMEOUT_MS", 60000),
+    maxRetries: intFromEnv("REPORT_MAX_RETRIES", 1),
+    maxSegments: intFromEnv("REPORT_MAX_SEGMENTS", 400),
+    maxSegmentChars: intFromEnv("REPORT_MAX_SEGMENT_CHARS", 8000),
+    /** Hard cap before the request is rejected as too large. */
+    maxInputChars: intFromEnv("REPORT_MAX_INPUT_CHARS", 200000),
+    /** Transcripts above this size are processed in chunks. */
+    chunkChars: intFromEnv("REPORT_CHUNK_CHARS", 60000),
+    maxOutputTokens: intFromEnv("REPORT_MAX_OUTPUT_TOKENS", 8192),
+  },
+
+  /**
+   * PharmaDesk Medicine Reference API.
+   *
+   * The published service needs no credential. The base URL stays server-side
+   * so the browser only ever talks to this backend. The API is licensed for
+   * reference use only; responses are displayed transiently and are not
+   * persisted or redistributed.
+   */
+  medicine: {
+    baseUrl: (process.env.PHARMADESK_BASE_URL ?? "https://pharmadesk.accron.in/api").replace(
+      /\/+$/,
+      "",
+    ),
+    timeoutMs: intFromEnv("PHARMADESK_TIMEOUT_MS", 8000),
+    maxRetries: intFromEnv("PHARMADESK_MAX_RETRIES", 2),
+    defaultLimit: intFromEnv("PHARMADESK_DEFAULT_LIMIT", 10),
+  },
+
   limits: {
     /** Concurrent Gnani streams allowed per client IP. */
     sessionsPerIp: intFromEnv("MAX_SESSIONS_PER_IP", 2),

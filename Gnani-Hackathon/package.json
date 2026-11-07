@@ -12,6 +12,9 @@
     "start": "cross-env NODE_ENV=production tsx backend/server.ts",
     "typecheck": "node scripts/build.mjs",
     "test:batch": "node scripts/test-batch.mjs",
+    "test:medicines": "node --import tsx scripts/test-medicines.ts",
+    "test:translation": "node --import tsx scripts/test-translation.ts",
+    "test:report": "node --import tsx scripts/test-report.ts",
     "preview": "vite preview --config frontend/vite.config.ts"
   },
   "engines": {

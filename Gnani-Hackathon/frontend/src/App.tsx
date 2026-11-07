@@ -1,4 +1,5 @@
 import { BatchPanel } from "./components/BatchPanel";
+import { ConsultationReportPanel } from "./components/ConsultationReport";
 import { ErrorBanner } from "./components/ErrorBanner";
 import { Header } from "./components/Header";
 import { LiveTranscription } from "./components/LiveTranscription";
@@ -7,12 +8,20 @@ import { StartActions } from "./components/StartActions";
 import type { BatchState } from "./hooks/useBatchProcessing";
 import { useAudioStreaming } from "./hooks/useAudioStreaming";
 import { useBatchDiarization } from "./hooks/useBatchDiarization";
+import { useConsultationReport } from "./hooks/useConsultationReport";
+import { useTranscriptTranslation } from "./hooks/useTranscriptTranslation";
 
 export default function App() {
   const audio = useAudioStreaming();
   const diarize = useBatchDiarization();
 
   const batchActive = diarize.state !== "idle";
+  const transcriptSegments = batchActive ? diarize.segments : audio.segments;
+  const translation = useTranscriptTranslation(transcriptSegments);
+  const report = useConsultationReport(
+    translation.segments,
+    batchActive ? "batch" : "live",
+  );
   const realtimeVisible = audio.state !== "idle" && audio.state !== "error";
   const showStartActions = !batchActive && (audio.state === "idle" || audio.state === "error");
 
@@ -122,14 +131,39 @@ export default function App() {
           )}
 
           <LiveTranscription
-            segments={batchActive ? diarize.segments : audio.segments}
+            segments={translation.segments}
             isProcessing={transcriptProcessing}
             state={batchActive ? "idle" : audio.state}
             onClear={batchActive ? diarize.reset : audio.clearTranscript}
             mode={batchActive ? "batch" : "live"}
             emptyTitle={batchActive ? batchEmpty?.title : undefined}
             emptyDescription={batchActive ? batchEmpty?.description : undefined}
+            showTranslation={translation.enabled}
+            onToggleTranslation={translation.setEnabled}
+            translationConfigured={translation.configured}
+            translationPending={translation.isTranslating}
+            translationCount={translation.translatedCount}
+            translationError={translation.error}
+            translationAvailabilityError={translation.availabilityError}
+            onRetryTranslation={translation.retry}
           />
+
+          {translation.segments.length > 0 && (
+            <ConsultationReportPanel
+              segments={translation.segments}
+              report={report.report}
+              state={report.state}
+              error={report.error}
+              configured={report.configured}
+              availabilityError={report.availabilityError}
+              speakers={report.speakers}
+              roles={report.roles}
+              isStale={report.isStale}
+              onRoleChange={report.setRole}
+              onGenerate={report.generate}
+              onReset={report.reset}
+            />
+          )}
         </div>
       </main>
 

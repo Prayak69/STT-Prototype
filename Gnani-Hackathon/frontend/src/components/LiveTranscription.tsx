@@ -3,6 +3,7 @@ import {
   ArrowDown,
   Check,
   Copy,
+  Languages,
   Loader2,
   ScrollText,
   Trash2,
@@ -18,10 +19,29 @@ interface LiveTranscriptionProps {
   mode?: "live" | "batch";
   emptyTitle?: string;
   emptyDescription?: string;
+  /** Show English translations alongside the raw transcript. */
+  showTranslation?: boolean;
+  onToggleTranslation?: (enabled: boolean) => void;
+  /** null while the server availability check is running. */
+  translationConfigured?: boolean | null;
+  translationPending?: boolean;
+  translationCount?: number;
+  translationError?: string | null;
+  translationAvailabilityError?: string | null;
+  onRetryTranslation?: () => void;
 }
 
-function transcriptText(segments: TranscriptSegment[]): string {
-  return segments.map((segment) => segment.text).join("\n\n");
+function transcriptText(
+  segments: TranscriptSegment[],
+  showTranslation: boolean,
+): string {
+  return segments
+    .map((segment) =>
+      showTranslation && segment.translatedText
+        ? segment.translatedText
+        : segment.text,
+    )
+    .join("\n\n");
 }
 
 async function copyText(text: string): Promise<boolean> {
@@ -58,6 +78,14 @@ export function LiveTranscription({
   mode = "live",
   emptyTitle,
   emptyDescription,
+  showTranslation = false,
+  onToggleTranslation,
+  translationConfigured = null,
+  translationPending = false,
+  translationCount = 0,
+  translationError,
+  translationAvailabilityError,
+  onRetryTranslation,
 }: LiveTranscriptionProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const previousCountRef = useRef(segments.length);
@@ -118,7 +146,7 @@ export function LiveTranscription({
   };
 
   const handleCopy = async () => {
-    const copiedOk = await copyText(transcriptText(segments));
+    const copiedOk = await copyText(transcriptText(segments, showTranslation));
     if (!copiedOk) return;
 
     setCopied(true);
@@ -147,6 +175,35 @@ export function LiveTranscription({
         </div>
 
         <div className="flex items-center gap-1">
+          <button
+            type="button"
+            onClick={() => onToggleTranslation?.(!showTranslation)}
+            disabled={translationConfigured !== true || !onToggleTranslation}
+            aria-pressed={showTranslation}
+            aria-label={showTranslation ? "Hide English translation" : "Translate transcript to English"}
+            title={
+              translationConfigured === true
+                ? showTranslation
+                  ? "Hide the English translation"
+                  : "Translate the transcript into English"
+                : translationAvailabilityError ?? "English translation is unavailable."
+            }
+            className={`inline-flex items-center gap-1.5 rounded-lg px-2 py-1.5 text-[11px] font-medium transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 disabled:cursor-not-allowed disabled:opacity-40 ${
+              showTranslation
+                ? "bg-indigo-50 text-indigo-700 hover:bg-indigo-100"
+                : "text-slate-500 hover:bg-slate-50 hover:text-slate-800"
+            }`}
+          >
+            {showTranslation && translationPending ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+            ) : (
+              <Languages className="h-3.5 w-3.5" aria-hidden="true" />
+            )}
+            <span className="hidden sm:inline">
+              {showTranslation ? "English" : "Translate"}
+            </span>
+          </button>
+
           <button
             type="button"
             onClick={handleCopy}
@@ -178,6 +235,28 @@ export function LiveTranscription({
           </button>
         </div>
       </div>
+
+      {((translationError && showTranslation) ||
+        (translationConfigured === false &&
+          translationAvailabilityError &&
+          hasSegments)) && (
+        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-amber-100 bg-amber-50/70 px-4 py-2.5 sm:px-5">
+          <p className="text-xs font-medium text-amber-800">
+            {translationError && showTranslation
+              ? `English translation failed: ${translationError}`
+              : translationAvailabilityError}
+          </p>
+          {translationError && showTranslation && onRetryTranslation && (
+            <button
+              type="button"
+              onClick={onRetryTranslation}
+              className="rounded-md bg-white px-2.5 py-1 text-[11px] font-medium text-amber-800 ring-1 ring-inset ring-amber-200 transition-colors hover:bg-amber-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-600"
+            >
+              Retry translation
+            </button>
+          )}
+        </div>
+      )}
 
       {confirmingClear && (
         <div className="flex flex-wrap items-center justify-between gap-2 border-b border-rose-100 bg-rose-50/70 px-4 py-2.5 sm:px-5">
@@ -240,7 +319,10 @@ export function LiveTranscription({
           {hasSegments && (
             <div className="space-y-5">
               {segments.map((segment) => (
-                <article key={segment.key}>
+                <article
+                  key={segment.key}
+                  id={`transcript-segment-${segment.key}`}
+                >
                   <div className="mb-1.5 flex items-center gap-2">
                     <span
                       className="inline-flex items-center rounded-full bg-indigo-50 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-indigo-700 ring-1 ring-inset ring-indigo-100"
@@ -274,6 +356,33 @@ export function LiveTranscription({
                   <p className="whitespace-pre-wrap break-words text-[15px] leading-7 text-slate-800">
                     {segment.text}
                   </p>
+
+                  {showTranslation && segment.translationState === "pending" && (
+                    <div className="mt-1.5 flex items-center gap-1.5 text-[11px] font-medium text-slate-400">
+                      <Loader2 className="h-3 w-3 animate-spin" aria-hidden="true" />
+                      Translating to English…
+                    </div>
+                  )}
+
+                  {showTranslation &&
+                    segment.translationState === "done" &&
+                    segment.translatedText && (
+                      <div className="mt-2 rounded-lg border border-indigo-100 bg-indigo-50/60 px-3 py-2">
+                        <div className="mb-0.5 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wide text-indigo-500">
+                          <Languages className="h-3 w-3" aria-hidden="true" />
+                          English
+                        </div>
+                        <p className="whitespace-pre-wrap break-words text-[15px] leading-7 text-slate-800">
+                          {segment.translatedText}
+                        </p>
+                      </div>
+                    )}
+
+                  {showTranslation && segment.translationState === "error" && (
+                    <p className="mt-1.5 text-[11px] font-medium text-rose-500">
+                      {segment.translationError ?? "English translation unavailable."}
+                    </p>
+                  )}
                 </article>
               ))}
             </div>
@@ -299,17 +408,27 @@ export function LiveTranscription({
         )}
       </div>
 
-      <div className="flex items-center justify-between border-t border-slate-100 px-4 py-2 text-[10px] text-slate-400 sm:px-5">
-        <span>
-          {hasDiarization
-            ? isBatch
-              ? "Speaker-separated transcript (batch diarization)."
-              : "Speaker-separated transcript (realtime diarization; labels can lag a few seconds)."
-            : isBatch
-            ? "Every segment from the uploaded file."
-            : "Language is detected per utterance."}
+      <div className="flex items-center justify-between gap-3 border-t border-slate-100 px-4 py-2 text-[10px] text-slate-400 sm:px-5">
+        <span className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
+          <span>
+            {hasDiarization
+              ? isBatch
+                ? "Speaker-separated transcript (batch diarization)."
+                : "Speaker-separated transcript (realtime diarization; labels can lag a few seconds)."
+              : isBatch
+              ? "Every segment from the uploaded file."
+              : "Language is detected per utterance."}
+          </span>
+          {showTranslation && translationConfigured === true && hasSegments && (
+            <span className="inline-flex items-center gap-1 text-indigo-500">
+              <Languages className="h-3 w-3" aria-hidden="true" />
+              {translationPending
+                ? "Translating to English…"
+                : `${translationCount} in English`}
+            </span>
+          )}
         </span>
-        <span>Kept until you clear it.</span>
+        <span className="shrink-0">Kept until you clear it.</span>
       </div>
     </section>
   );

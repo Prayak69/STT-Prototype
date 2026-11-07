@@ -16,6 +16,23 @@ import {
 } from "./gnaniBatch";
 import { attachSttProxy } from "./gnaniWebSocket";
 import { logger } from "./logger";
+import {
+  MedicineSearchInputError,
+  searchMedicineMatches,
+} from "./medicineMatcher";
+import { PharmaDeskError } from "./pharmaDesk";
+import {
+  TranslationError,
+  TranslationInputError,
+  translateSegments,
+  translationConfigured,
+} from "./translation";
+import {
+  generateConsultationReport,
+  reportConfigured,
+  ReportError,
+  ReportInputError,
+} from "./consultationReport";
 
 assertConfig();
 
@@ -29,6 +46,15 @@ app.get("/api/health", (_req, res) => {
     language: config.stt.languageCode,
     sampleRate: config.stt.sampleRate,
     configured: Boolean(config.stt.apiKey),
+    translation: {
+      configured: translationConfigured(),
+      model: config.translation.model,
+      targetLanguage: config.translation.targetLanguage,
+    },
+    report: {
+      configured: reportConfigured(),
+      model: config.report.model,
+    },
   });
 });
 
@@ -36,6 +62,231 @@ const upload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 10 * 1024 * 1024 }, // Gnani direct-upload limit: 10 MB
 });
+
+/**
+ * Medicine reference search.
+ *
+ * POST /api/medicines/search
+ *   Body: { query: string, market?: "IN"|"US"|"GB"|"EU"|"CA"|"AU", limit?: 1..50 }
+ *
+ * This is an additive reference feature. It never changes transcripts and is
+ * intentionally separate from STT, WebSocket, audio and diarization code so
+ * the results can later feed SOAP-note generation. PharmaDesk needs no API
+ * key; the browser only talks to this server.
+ */
+const medicineJson = express.json({ limit: "8kb" });
+
+app.post(
+  "/api/medicines/search",
+  (req, res, next) => {
+    medicineJson(req, res, (error) => {
+      if (error) {
+        res.status(400).json({
+          ok: false,
+          code: "invalid_json",
+          error: "Request body must be valid JSON.",
+        });
+        return;
+      }
+      next();
+    });
+  },
+  async (req, res) => {
+    try {
+      const result = await searchMedicineMatches(req.body);
+      res.json(result);
+    } catch (error) {
+      if (error instanceof MedicineSearchInputError) {
+        res.status(400).json({
+          ok: false,
+          code: "invalid_request",
+          error: error.message,
+        });
+        return;
+      }
+
+      if (error instanceof PharmaDeskError) {
+        if (error.retryAfterSeconds !== undefined) {
+          res.setHeader(
+            "Retry-After",
+            String(Math.max(0, Math.ceil(error.retryAfterSeconds))),
+          );
+        }
+        const status =
+          error.code === "invalid_request" || error.code === "bad_request"
+            ? 400
+            : error.code === "not_found"
+              ? 404
+              : error.code === "rate_limited"
+                ? 429
+                : error.code === "timeout"
+                  ? 504
+                  : 502;
+        logger.warn("Medicine search upstream error", {
+          code: error.code,
+          status: error.status,
+          message: error.message,
+        });
+        res.status(status).json({
+          ok: false,
+          code: error.code,
+          error: error.message,
+        });
+        return;
+      }
+
+      logger.error("Medicine search failed", {
+        error: (error as Error).message,
+      });
+      res.status(500).json({
+        ok: false,
+        code: "internal_error",
+        error: "Medicine search failed.",
+      });
+    }
+  },
+);
+
+/**
+ * English translation for transcript segments.
+ *
+ * POST /api/translate
+ *   Body: { segments: [{ id, text, language? }], targetLanguage?: "English" }
+ *
+ * Additive and independent of STT: the browser keeps the raw transcript and
+ * displays the returned English text alongside it. The Gemini key stays here.
+ */
+const translationJson = express.json({ limit: "128kb" });
+
+app.post(
+  "/api/translate",
+  (req, res, next) => {
+    translationJson(req, res, (error) => {
+      if (error) {
+        res.status(400).json({
+          ok: false,
+          code: "invalid_json",
+          error: "Request body must be valid JSON.",
+        });
+        return;
+      }
+      next();
+    });
+  },
+  async (req, res) => {
+    try {
+      const result = await translateSegments(req.body);
+      res.json({ ok: true, ...result });
+    } catch (error) {
+      if (error instanceof TranslationInputError) {
+        res.status(400).json({
+          ok: false,
+          code: "invalid_request",
+          error: error.message,
+        });
+        return;
+      }
+
+      if (error instanceof TranslationError) {
+        const status =
+          error.code === "not_configured" || error.code === "disabled"
+            ? 503
+            : error.code === "rate_limited"
+              ? 429
+              : error.code === "timeout"
+                ? 504
+                : 502;
+        res.status(status).json({
+          ok: false,
+          code: error.code,
+          error: error.message,
+        });
+        return;
+      }
+
+      logger.error("Translation failed", {
+        error: (error as Error).message,
+      });
+      res.status(500).json({
+        ok: false,
+        code: "internal_error",
+        error: "Translation failed.",
+      });
+    }
+  },
+);
+
+/**
+ * Structured consultation report.
+ *
+ * POST /api/report
+ *   Body: { mode?: "live"|"batch", segments: [{ id, text, speaker?, role?,
+ *           startTime?, endTime?, language? }] }
+ *
+ * Derived from finished transcript text; the raw transcript is never changed.
+ * The Gemini key stays on the server.
+ */
+const reportJson = express.json({ limit: "1mb" });
+
+app.post(
+  "/api/report",
+  (req, res, next) => {
+    reportJson(req, res, (error) => {
+      if (error) {
+        res.status(400).json({
+          ok: false,
+          code: "invalid_json",
+          error: "Request body must be valid JSON.",
+        });
+        return;
+      }
+      next();
+    });
+  },
+  async (req, res) => {
+    try {
+      const result = await generateConsultationReport(req.body);
+      res.json({ ok: true, ...result });
+    } catch (error) {
+      if (error instanceof ReportInputError) {
+        res.status(error.status).json({
+          ok: false,
+          code: error.status === 413 ? "too_large" : "invalid_request",
+          error: error.message,
+        });
+        return;
+      }
+
+      if (error instanceof ReportError) {
+        const status =
+          error.code === "not_configured" || error.code === "disabled"
+            ? 503
+            : error.code === "rate_limited"
+              ? 429
+              : error.code === "timeout"
+                ? 504
+                : error.code === "too_large"
+                  ? 413
+                  : 502;
+        res.status(status).json({
+          ok: false,
+          code: error.code,
+          error: error.message,
+        });
+        return;
+      }
+
+      logger.error("Report generation failed", {
+        error: (error as Error).message,
+      });
+      res.status(500).json({
+        ok: false,
+        code: "internal_error",
+        error: "Report generation failed.",
+      });
+    }
+  },
+);
 
 /**
  * Gnani Batch STT proxy for speaker diarization.
